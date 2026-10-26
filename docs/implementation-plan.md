@@ -1,5 +1,10 @@
 # drtui implementation plan
 
+The supported interactive CLI is now the .NET 10 Spectre.Console application
+described in [README.md](../README.md). The provider host and live recovery
+execution remain unimplemented. Paths below describe planned .NET components,
+not existing directories unless explicitly identified as implemented.
+
 ## Outcome
 
 Deliver a stateless CLI that can validate, package, inspect, and execute the
@@ -14,8 +19,8 @@ used to compensate for an untestable earlier layer.
 
 ## Decisions to freeze first
 
-1. Provider plugins are separate executables speaking versioned gRPC. Native Go
-   shared-object plugins are not supported.
+1. Provider plugins are separate executables speaking versioned gRPC, not
+  in-process assemblies.
 2. A provider `digest` is the OCI manifest digest. A lockfile additionally pins
    the platform-specific binary blob digest and embedded plugin manifest digest.
 3. Local development may use `file://` plugins, but their SHA-256 is still
@@ -37,60 +42,22 @@ neutral, so another destination can replace EC2 later.
 
 ## Intended repository layout
 
-```text
-cmd/
-|-- drtui/                        Main CLI
-|-- drtui-plugin-aws-secrets/     AWS Secrets Manager provider
-|-- drtui-plugin-s3/              S3/R2/Garage storage provider
-|-- drtui-plugin-proxmox-pbs/     Proxmox Backup Server CLI provider
-|-- drtui-plugin-terraform/       Terraform infrastructure provider
-|-- drtui-plugin-proxmox-ve/      Proxmox VE VM/container provider
-|-- drtui-plugin-coolify/         Coolify application provider
-`-- drtui-plugin-cloudflare/      Cloudflare DNS provider
-api/proto/provider/v1/             Protocol source
-gen/provider/v1/                   Checked-in generated Go protocol
-internal/
-|-- app/                           CLI use cases and dependency wiring
-|-- expression/                    Parser, resolver, and type checker
-|-- engine/                        Scheduler, retries, rollback, state
-|-- journal/                       Redacted append-only JSONL journal
-|-- package/                       .drp archive, lockfile, manifest, signatures
-|-- plan/                          YAML load, schema, semantic compilation
-|-- pluginhost/                    Discovery, digest check, process, gRPC adapters
-|-- remote/                        SSH probe and reusable remote primitives
-|-- secretbroker/                  Scoped, expiring secret leases for plugins
-`-- testkit/                       Clocks, fake providers, fixtures, fault scripts
-plugins/
-|-- awssecrets/
-|-- s3/
-|-- proxmoxpbs/
-|-- terraform/
-|-- proxmoxve/
-|-- coolify/
-`-- cloudflare/
-pkg/
-|-- pluginapi/                     Stable in-process contracts
-|-- pluginsdk/                     Plugin server, errors, schema helpers
-`-- plugintest/                    Public provider conformance suite
-test/
-|-- integration/                  Process, Docker, and emulator tests
-|-- system/                       Credentialed disposable-cloud drills
-`-- fixtures/
-    |-- plugins/                   Deterministic test plugin
-    |-- sshd/                      Linux SSH destination image
-    |-- plans/                     Minimal plans per engine behavior
-    `-- backups/                   Synthetic Coolify and PostgreSQL data
-tools/                             Pinned Buf, lint, signing, and release tooling
-```
+The current code lives in the root .NET project; see
+[architecture](architecture.md#repository-layout). Future components can be
+added as .NET class libraries and executable provider projects: plan
+compilation, expression resolution, scheduler, journal, package verifier,
+plugin host, secret broker, remote transport, provider SDK, and conformance
+tests. Keep the versioned protocol in `api/proto/provider/v1/`, with generated
+C# types checked into a dedicated project when introduced.
 
 ## Test modes and isolation
 
 | Level | Command | Network | Purpose |
 | --- | --- | --- | --- |
-| Unit | `go test ./...` | No external network | Parsers, types, DAG, retries, redaction, provider logic with fake clients |
-| Integration | `go test ./test/integration/... -count=1` | Loopback/Docker | Plugin processes, gRPC, LocalStack/MinIO, fake Cloudflare API, Linux SSH target |
-| System | `go test ./test/system/... -count=1 -timeout 90m` | AWS/test DNS zone | Provision VM, install Coolify, restore synthetic data, cut over test DNS, rollback |
-| Compatibility | `go test ./pkg/plugintest/...` | Plugin-defined | Contract suite external plugin authors can import |
+| Unit | `dotnet test tests/Drtui.Tests.csproj` | No external network | Current plan, readiness, and PBS tests; expand for engine and redaction |
+| Integration | Planned .NET test project | Loopback/Docker | Plugin processes, gRPC, LocalStack/MinIO, fake Cloudflare API, Linux SSH target |
+| System | Planned .NET test project | AWS/test DNS zone | Provision VM, install Coolify, restore synthetic data, cut over test DNS, rollback |
+| Compatibility | Planned .NET conformance suite | Plugin-defined | Contract suite external plugin authors can import |
 
 Default tests must pass when Docker, cloud credentials, Terraform, and `protoc`
 are absent. Integration tests detect an unavailable Docker daemon and skip with
@@ -198,8 +165,8 @@ peering.
 
 Deliverables:
 
-- Pin Buf and protobuf Go generators; add `buf lint`, generation, and breaking
-  change checks. Check generated Go into `gen/provider/v1`.
+- Pin Buf and protobuf C# generators; add `buf lint`, generation, and breaking
+  change checks. Check generated C# into a dedicated protocol project.
 - Extend the protocol with structured error details and a host-side secret lease
   broker. Plugins receive opaque, action-scoped handles and resolve them over
   authenticated inherited IPC; raw secrets never enter JSON action payloads.
@@ -212,7 +179,7 @@ Deliverables:
 Tests and gate:
 
 - Protocol lint and generated-code cleanliness pass in CI.
-- Go and one non-Go fixture can complete handshake and one extension action.
+- A .NET host and an external fixture can complete handshake and one extension action.
 - Lockfile and artifact digest golden tests pass on Windows and Linux.
 - Secret handles reject the wrong process, action, invocation, and expired lease.
 
@@ -254,7 +221,7 @@ Tests and gate:
 
 - A fake clock makes retries and deadlines fast and deterministic.
 - Fault-injection tests cover every state transition and rollback interruption.
-- Race tests pass under `go test -race ./...` on Linux.
+- Concurrency and cancellation tests pass on Windows and Linux.
 - Re-running fixture actions produces the same idempotency keys and journal
   ordering, excluding explicitly documented timestamps.
 
@@ -270,7 +237,7 @@ Deliverables:
   and temporary-directory cleanup.
 - Map gRPC statuses and provider details to `ProviderError` without leaking raw
   process output.
-- Publish `pkg/pluginsdk` and `pkg/plugintest` for third-party providers.
+- Publish a .NET provider SDK and conformance suite for third-party providers.
 
 Tests and gate:
 
@@ -283,7 +250,7 @@ Tests and gate:
 
 Deliverables:
 
-- Implement `internal/remote` with host-key-pinned SSH, SFTP, deadlines, bounded
+- Implement host-key-pinned SSH and SFTP transport with deadlines, bounded
   output, argument validation, and no ambient SSH agent fallback.
 - Add `ConnectivityReport` and `drtui target probe`.
 - Add Tier 1 and Tier 2 destination fixtures and all negative cases above.
@@ -301,7 +268,7 @@ Tests and gate:
 
 #### AWS Secrets Manager
 
-Use AWS SDK for Go v2. `initialize` loads the selected credential chain and calls
+Use the AWS SDK for .NET. `initialize` loads the selected credential chain and calls
 STS `GetCallerIdentity`. `fetchPlanSecrets` reads one configured secret document
 at `drtui/plans/<plan-id>`, requires a JSON string map, and returns leased
 mutable values.
@@ -314,7 +281,7 @@ cancellation, and zero secret bytes in logs or journals.
 
 #### S3-compatible storage
 
-Use AWS SDK for Go v2 with optional endpoint, region, path-style, and TLS policy
+Use the AWS SDK for .NET with optional endpoint, region, path-style, and TLS policy
 for S3, R2, Garage, and MinIO. Parse storage URIs structurally. Download to a
 same-directory temporary file, stream with limits, verify a required checksum,
 `fsync`, atomically rename, and remove partial files on every failure.
@@ -327,7 +294,7 @@ policy, and work-directory escape rejection.
 
 #### Terraform infrastructure
 
-Wrap a pinned Terraform CLI through `exec.CommandContext`; never scrape human
+Wrap a pinned Terraform CLI through `ProcessStartInfo.ArgumentList` with cancellation; never scrape human
 output. Use `terraform show/output -json`, a constrained module directory, an
 explicit backend, and a per-run data directory. Normalize diagnostics into
 structured errors. Preserve transient state through rollback in the same run;
@@ -354,10 +321,11 @@ JSON output, `PBS_PASSWORD_FD`, and a pinned `PBS_FINGERPRINT`. Reject restore
 paths outside the engine work directory and never automatically retry a missing
 or invalid archive signature with `--ignore-missing-signature`.
 
-The initial implementation lives in `plugins/proxmoxpbs` with an injected
-command runner. Unit tests use scripted JSON and failures, so they run without a
-PBS installation. Linux integration installs a pinned client and connects to a
-disposable PBS test datastore containing host, VM, and container snapshots.
+The standalone .NET implementation lives in [PbsClient.cs](../PbsClient.cs)
+with an injected command runner. Unit tests use scripted JSON and failures, so
+they run without a PBS installation. A Linux integration test remains planned:
+it should install a pinned client and connect to a disposable PBS test datastore
+containing host, VM, and container snapshots.
 Acceptance covers token authentication, wrong TLS fingerprint, namespaces,
 snapshot parsing, archive inventory, cancellation, bounded output, partial
 restore cleanup, encrypted-archive fixtures, and no secret material in process

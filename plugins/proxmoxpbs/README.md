@@ -1,15 +1,16 @@
 # Proxmox Backup Server provider
 
-This package implements `pluginapi.IBackupProvider` by invoking the official
-`proxmox-backup-client` executable. It currently supports:
+The standalone .NET client in [PbsClient.cs](../../PbsClient.cs) invokes the
+official `proxmox-backup-client` executable. It supports:
 
 - `probeRepository`
 - `listSnapshots`
 - `listSnapshotFiles`
 - `restoreArchive`
 
-It is the provider core and manifest. The out-of-process gRPC executable will be
-added when the shared plugin SDK from Phase 0 is available.
+The client is not connected to the CLI or an out-of-process provider host yet.
+Plan execution and the gRPC provider executable remain future work. The
+[manifest](manifest.json) describes the planned provider contract.
 
 ## Security properties
 
@@ -24,32 +25,16 @@ added when the shared plugin SDK from Phase 0 is available.
 
 ## Isolated tests
 
-The normal suite uses a scripted command runner and does not require Linux, PBS,
-or `proxmox-backup-client`:
+The [unit tests](../../tests/BehaviorTests.cs) use a fake command runner and do
+not require a PBS server or `proxmox-backup-client`:
 
-```powershell
-go test ./plugins/proxmoxpbs -v
+```sh
+dotnet test tests/Drtui.Tests.csproj
 ```
 
-To probe a live test repository, install `proxmox-backup-client` and set:
+There is no .NET live-repository integration test yet.
 
-```powershell
-$env:DRTUI_PBS_TEST = "1"
-$env:DRTUI_PBS_SERVER = "pbs.lab.example"
-$env:DRTUI_PBS_PORT = "8007"
-$env:DRTUI_PBS_DATASTORE = "recovery"
-$env:DRTUI_PBS_AUTH_ID = "drtui@pbs!dr"
-$env:DRTUI_PBS_TOKEN = "<test-token>"
-$env:DRTUI_PBS_FINGERPRINT = "AA:BB:...:FF"
-$env:DRTUI_PBS_NAMESPACE = "dr"
-$env:DRTUI_PBS_GROUP = "vm/101" # optional
-go test ./plugins/proxmoxpbs -run TestIntegrationPBSRepository -v -count=1
-```
-
-Use a read-only API token scoped to the test datastore. The test probes status
-and lists snapshots; it does not restore, modify, prune, or delete data.
-
-## Plan composition
+## Planned plan composition
 
 An archive can feed a later application or infrastructure step through an
 engine-owned path:

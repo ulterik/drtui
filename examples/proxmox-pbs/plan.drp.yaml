@@ -31,11 +31,11 @@ inputs:
 providers:
   recovery_secrets:
     kind: keyvault
-    source: oci://ghcr.io/drtui/aws-secrets-provider
-    version: 1.2.0
-    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    source: oci://ghcr.io/drtui/cloudflare-secrets-provider
+    version: 0.1.0
+    digest: sha256:7777777777777777777777777777777777777777777777777777777777777777
     config:
-      region: eu-west-1
+      accountId: ""
   pbs:
     kind: backup
     source: oci://ghcr.io/drtui/proxmox-backup-provider
@@ -66,14 +66,14 @@ policy:
 
 steps:
   - id: initialize_secrets
-    name: Authenticate to the recovery keyvault
+    name: Authenticate to Cloudflare Secrets Store
     uses: recovery_secrets/initialize
     timeout: 30s
     with:
       authConfig:
-        method: aws-cli-profile
+        method: cloudflare-api-token
         parameters:
-          profile: disaster-recovery
+          tokenEnv: CLOUDFLARE_API_TOKEN
 
   - id: fetch_secrets
     name: Lease the PBS API token

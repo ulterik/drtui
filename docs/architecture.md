@@ -1,5 +1,11 @@
 # drtui architecture
 
+The current application is a .NET 10 Spectre.Console CLI. The plan loader and
+readiness checks live in [Plan.cs](../Plan.cs) and [Session.cs](../Session.cs);
+the standalone PBS command adapter lives in [PbsClient.cs](../PbsClient.cs).
+The execution package, scheduler, provider host, journal, and protocol below
+describe future work, not supported CLI capabilities.
+
 ## Design constraints
 
 drtui is a stateless orchestrator. A run consumes one immutable `.drp`
@@ -14,39 +20,25 @@ observed state explicitly.
 
 ## Repository layout
 
-Go projects conventionally avoid a top-level `src` directory. Public plugin
-contracts therefore live in `pkg`, while engine implementation remains under
-`internal`:
+The current .NET implementation lives at the repository root:
 
 ```text
 drtui/
-|-- cmd/drtui/                    CLI entry point only
-|-- api/proto/provider/v1/         Versioned out-of-process RPC protocol
-|-- internal/
-|   |-- app/                       Command composition and dependency wiring
-|   |-- package/                   .drp loading, checksums, signatures, lockfile
-|   |-- plan/                      YAML parsing, schema and semantic validation
-|   |-- engine/                    DAG, scheduler, state context, compensation
-|   |-- expression/                Typed ${{ ... }} expression resolution
-|   |-- pluginhost/                Discovery, handshake, process and RPC lifecycle
-|   |-- journal/                   Redacted JSONL execution events
-|   `-- security/                  Trust policy, path checks, log redaction
-|-- pkg/pluginapi/                 Stable Go contracts and shared value types
+|-- Drtui.csproj                    .NET 10 console application
+|-- Program.cs                      CLI entry point and local readiness view
+|-- Plan.cs                         YAML, schema, and dependency validation
+|-- PlanPicker.cs                   Interactive plan browser
+|-- PlanPreview.cs                  Plan summaries for the browser
+|-- Session.cs                      Inputs, tool checks, and AWS profiles
+|-- PbsClient.cs                    Standalone PBS command adapter
+|-- tests/                          .NET unit tests
+|-- api/proto/provider/v1/          Proposed out-of-process RPC protocol
 |-- schemas/
-|   |-- drp.schema.json            Plan authoring and package validation
-|   `-- plugin.schema.json         Provider manifest validation
-|-- examples/coolify-s3-cloudflare/
-|   `-- plan.drp.yaml              End-to-end reference plan
-|-- examples/proxmox-pbs/
-|   `-- plan.drp.yaml              Isolated PBS inventory and archive restore
-|-- plugins/                       Optional built-in/reference adapters only
-|   |-- keyvault/
-|   |-- storage/
-|   |-- backup/
-|   |-- application/
-|   |-- infrastructure/
-|   `-- dns/
-`-- docs/                          Protocol, security, authoring, and ADRs
+|   |-- drp.schema.json             Plan validation
+|   `-- plugin.schema.json          Provider manifest schema
+|-- examples/                       Reference YAML plans
+|-- plugins/proxmoxpbs/             PBS provider manifest and design notes
+`-- docs/                           Architecture and planned execution
 ```
 
 Third-party providers should normally be separate repositories and processes.
@@ -132,16 +124,14 @@ allowed because it does not alter action payloads or ordering.
 
 ## Provider model
 
-The exact in-process contracts are defined in
-[`pkg/pluginapi/providers.go`](../pkg/pluginapi/providers.go). All calls take a
-`context.Context`, return explicit Go errors, and use semantic types such as
-`netip.Addr`, `StorageURI`, and `DomainName`. Arbitrary provider configuration is
-the sole dynamic boundary: it is canonical JSON in `RawConfig`, validated
-against the plugin schema before invocation, then decoded by the provider with
-unknown fields rejected.
+There is no in-process provider host contract yet. The standalone
+[PbsClient.cs](../PbsClient.cs) exposes typed requests and results, an injected
+command runner, and a secret resolver. Future provider configuration should be
+canonical JSON, validated against the provider's schema before invocation;
+unknown fields should be rejected.
 
-`IBackupProvider`, `IInfrastructureProvider`, and
-`IApplicationLayerProvider` are separate. A backup provider resolves and
+Future backup, infrastructure, and application capabilities remain separate.
+A backup provider resolves and
 restores immutable backup snapshots; Terraform or Proxmox VE provisions compute;
 Coolify, Heroku, or systemd configures application runtimes. A plugin executable
 may advertise multiple capabilities and implement multiple interfaces.
@@ -159,8 +149,8 @@ flowchart LR
   PVE -->|ProvisionResult and SSHConnection| App[Application provider]
 ```
 
-The PBS implementation in `plugins/proxmoxpbs` wraps
-`proxmox-backup-client`. Its core actions are `probeRepository`,
+The standalone .NET PBS adapter in [PbsClient.cs](../PbsClient.cs) wraps
+`proxmox-backup-client`. Its methods cover `probeRepository`,
 `listSnapshots`, `listSnapshotFiles`, and `restoreArchive`. The CLI is invoked
 without a shell, requests JSON output, receives its API token through
 `PBS_PASSWORD_FD=0`, and requires a pinned `PBS_FINGERPRINT`. Restore targets
@@ -174,31 +164,29 @@ flow through `pbs/restoreArchive` into an engine-owned work path. This keeps
 backup selection independently testable from VM allocation and application
 bootstrap.
 
-The TypeScript-like `Promise<Record<string,string>>` keyvault contract is
-intentionally represented as `(*SecretSet, error)`, not `map[string]string`.
-Go strings cannot be wiped. `SecretSet` owns mutable byte buffers, returns
-copies, and is destroyed as soon as the final consumer completes. This is
-best-effort memory hygiene because the Go runtime cannot guarantee that every
-compiler or kernel copy is erased.
+Future keyvault contracts should return owned mutable byte buffers, not strings
+that cannot be wiped. The standalone PBS adapter clears resolved token buffers
+and standard-input copies after use. This is best-effort memory hygiene; .NET
+cannot guarantee all copies held by the runtime or operating system are erased.
 
 ### Out-of-process plugins
 
-Production plugins are executables, never Go shared objects. Go's native
-`plugin` ABI is toolchain-sensitive and is not supported on Windows. The host
-launches a pinned executable and negotiates a versioned protobuf/gRPC protocol:
+Production plugins are planned as separate executables, not in-process .NET
+assemblies. The host will launch a pinned executable and negotiate a versioned
+protobuf/gRPC protocol:
 
 1. The process receives a one-time handshake token over an inherited pipe.
 2. `GetMetadata` returns protocol version, capabilities, action descriptors,
    and input/output JSON Schemas.
 3. The host selects a compatible protocol and creates capability-specific
-   adapters implementing the Go interfaces.
+  .NET adapters.
 4. Calls carry deadline, cancellation, idempotency key, and canonical JSON.
 5. `Close` drains requests and terminates the child process.
 
 Core actions map directly to the public interfaces. Provider-specific actions,
 such as `coolify/injectEnvironment`, use the same RPC envelope and must publish
 strict input/output schemas in the plugin manifest. They do not expand the core
-Go API. Unknown actions, capabilities, fields, or output types fail compilation.
+CLI API. Unknown actions, capabilities, fields, or output types fail compilation.
 
 Provider config is validated at compile time but resolved immediately before an
 action invokes that provider. A step-output expression in config adds an
