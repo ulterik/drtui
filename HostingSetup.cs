@@ -53,4 +53,39 @@ internal static class HostingSetup
             return "Cloudflare Containers/Sandbox is selected, but this plan requires SSH host recovery. A Cloudflare-compatible recovery workflow and adapter are not implemented.";
         return null;
     }
+
+    internal static IReadOnlySet<string> DeferredInputs(Plan plan)
+    {
+        var incompatible = Providers(plan).Where(provider => CompatibilityIssue(plan, provider.Value!) is not null)
+            .Select(provider => provider.Key).ToHashSet(StringComparer.Ordinal);
+        var deferred = new HashSet<string>(StringComparer.Ordinal);
+        if (incompatible.Count == 0) return deferred;
+        var shared = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var provider in plan.Providers)
+            CollectInputs(provider.Value?["config"], incompatible.Contains(provider.Key) ? deferred : shared);
+        foreach (var step in plan.Steps)
+        {
+            var provider = ((string?)step?["uses"] ?? "").Split('/')[0];
+            CollectInputs(step, incompatible.Contains(provider) ? deferred : shared);
+        }
+        CollectInputs(plan.Document["policy"], shared);
+        CollectInputs(plan.Document["transactions"], shared);
+        deferred.ExceptWith(shared);
+        return deferred;
+    }
+
+    private static void CollectInputs(JsonNode? node, ISet<string> inputs)
+    {
+        if (node is JsonObject properties)
+            foreach (var property in properties) CollectInputs(property.Value, inputs);
+        else if (node is JsonArray items)
+            foreach (var item in items) CollectInputs(item, inputs);
+        else if (node is JsonValue value && value.TryGetValue<string>(out var text))
+        {
+            var reference = Regex.Match(text,
+                @"^\$\{\{\s*inputs\.([a-z][a-z0-9_-]*)(?:\.[A-Za-z_][A-Za-z0-9_-]*)*\s*\}\}$",
+                RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+            if (reference.Success) inputs.Add(reference.Groups[1].Value);
+        }
+    }
 }

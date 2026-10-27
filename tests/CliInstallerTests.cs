@@ -42,6 +42,40 @@ public class CliInstallerTests
         Assert.All(lines, line => Assert.True(line.TrimEnd('\r').Length <= 80, $"Line exceeds 80 columns: {line}"));
     }
 
+    [Theory]
+    [InlineData(40)]
+    [InlineData(80)]
+    [InlineData(100)]
+    public void ManualGuidanceWrapsWithinTheConsoleWithoutTruncatingUrls(int width)
+    {
+        foreach (var (tool, url) in new[]
+        {
+            ("coolify", "https://github.com/coollabsio/coolify-cli"),
+            ("cf", "https://developers.cloudflare.com/cf/"),
+            ("cloudflared", "https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/"),
+            ("hcloud", "https://github.com/hetznercloud/cli"),
+            ("proxmox-backup-client", "https://pbs.proxmox.com/docs/installation.html#apt-based-proxmox-backup-client-repository")
+        })
+        {
+            using var writer = new StringWriter();
+            var console = AnsiConsole.Create(new AnsiConsoleSettings
+            {
+                Ansi = AnsiSupport.No, Out = new AnsiConsoleOutput(writer)
+            });
+            console.Profile.Width = width;
+            console.Write(CliInstaller.RenderManualGuidance(tool));
+            var lines = writer.ToString().Split('\n').Select(line => line.TrimEnd('\r')).ToArray();
+            Assert.All(lines, line => Assert.True(line.Length <= width, $"Line exceeds {width} columns: {line}"));
+            var content = string.Concat(lines.Where(line => line.Length >= 2).Select(line => line[1..^1].Trim()));
+            Assert.Contains(url, content);
+            if (tool == "coolify" && width >= 80)
+            {
+                Assert.Contains("No remote installation script runs here.", writer.ToString());
+                Assert.True(lines.Length <= 14, $"Coolify guidance should fit on a small terminal:\n{writer}");
+            }
+        }
+    }
+
     [Fact]
     public void OptionalApprovedToolsAreInstallableButDoNotBecomePlanRequirements()
     {

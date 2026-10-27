@@ -142,6 +142,51 @@ internal static class CliInstaller
         Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine),
         Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User)));
 
+    internal static Panel RenderManualGuidance(string tool)
+    {
+        string[] paragraphs = tool switch
+        {
+            "proxmox-backup-client" => ProxmoxWslSteps.ToArray(),
+            "cf" =>
+            [
+                "Cloudflare cf (beta) is distributed via npm.",
+                "Install Node.js LTS, open a new terminal, then run:",
+                "npm install --global cf",
+                "https://developers.cloudflare.com/cf/"
+            ],
+            "coolify" =>
+            [
+                "Install the official Coolify CLI:",
+                "https://github.com/coollabsio/coolify-cli",
+                "Add coolify to PATH.",
+                "No remote installation script runs here."
+            ],
+            "cloudflared" =>
+            [
+                "Install the Tunnel connector:",
+                "https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/",
+                "cf manages Cloudflare resources; it does not replace cloudflared."
+            ],
+            _ =>
+            [
+                HostingSetup.Choices.FirstOrDefault(choice => choice.Executable == tool)?.Documentation ??
+                    "No verified Winget package for this tool. Follow its vendor's installation instructions."
+            ]
+        };
+        var title = tool == CliToolCatalog.Proxmox.Executable ? "Proxmox backup client in Debian WSL" :
+            (CliToolCatalog.ForExecutable(tool)?.Name ?? tool) + " installation";
+        return new Panel(new Text(string.Join("\n\n", paragraphs)))
+            .Header("[bold aqua]" + Markup.Escape(title) + "[/]")
+            .Border(BoxBorder.Rounded).BorderColor(Color.Teal).Expand();
+    }
+
+    internal static void ShowManualGuidance(string tool)
+    {
+        AnsiConsole.Clear();
+        AnsiConsole.Write(RenderManualGuidance(tool));
+        Back();
+    }
+
     public static async Task<bool> OpenAsync(IReadOnlyList<Check> checks, bool requiredOnly = false)
     {
         AnsiConsole.Clear();
@@ -175,25 +220,7 @@ internal static class CliInstaller
 
         if (selected.Method == CliInstallMethod.Manual)
         {
-            if (selected.Tool == CliToolCatalog.Proxmox.Executable)
-            {
-                AnsiConsole.Clear();
-                AnsiConsole.MarkupLine("[bold aqua]Proxmox backup client in Debian WSL[/]");
-                foreach (var step in ProxmoxWslSteps)
-                    AnsiConsole.WriteLine(step);
-                Back();
-                return false;
-            }
-            var guidance = selected.Tool switch
-            {
-                "cf" => "Cloudflare cf (beta) is distributed via npm. Install Node.js LTS, open a new terminal, then run npm install --global cf. https://developers.cloudflare.com/cf/",
-                "coolify" => "Install the official Coolify CLI from https://github.com/coollabsio/coolify-cli and add coolify to PATH. No remote installation script runs here.",
-                "cloudflared" => "Install the Tunnel connector from https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/. cf manages Cloudflare resources; it does not replace cloudflared.",
-                _ => HostingSetup.Choices.FirstOrDefault(choice => choice.Executable == selected.Tool)?.Documentation ??
-                    "No verified Winget package for this tool. Follow its vendor's installation instructions."
-            };
-            AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(selected.Tool)}:[/] {Markup.Escape(guidance)}");
-            Back();
+            ShowManualGuidance(selected.Tool);
             return false;
         }
 
@@ -235,5 +262,14 @@ internal static class CliInstaller
         return attempted;
     }
 
-    private static void Back() => AnsiConsole.Prompt(new SelectionPrompt<string>().AddChoices("Back to settings"));
+    private static void Back()
+    {
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[grey]Enter / Esc / Q: back to settings[/]");
+        while (true)
+        {
+            var key = AnsiConsole.Console.Input.ReadKey(true);
+            if (key is null || key.Value.Key is ConsoleKey.Enter or ConsoleKey.Escape or ConsoleKey.Q) return;
+        }
+    }
 }

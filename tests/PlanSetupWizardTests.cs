@@ -69,8 +69,34 @@ public class PlanSetupWizardTests
         Assert.Contains(checks, check => check.Label == "target compatibility hosting" && check.Error is not null);
         var tasks = PlanSetupWizard.Tasks(session, checks);
         Assert.DoesNotContain(tasks, task => task.Kind == "hosting");
-        Assert.DoesNotContain(tasks, task => task.Kind == "field");
-        Assert.Contains(tasks, task => task.Kind == "guidance" && task.Label == "target compatibility hosting");
+        Assert.Contains(tasks, task => task.Kind == "field" && task.Label == "cloudflare_account_id");
+        Assert.Contains(tasks, task => task.Kind == "field" && task.Label == "r2_endpoint");
+        Assert.DoesNotContain(tasks, task => task.Label.StartsWith("target_", StringComparison.Ordinal));
+        Assert.DoesNotContain(tasks, task => task.Label == "target compatibility hosting");
+        Assert.Contains(tasks, task => task.Kind == "environment");
+    }
+
+    [Fact]
+    public void IncompatibleHostingDefersOnlyExclusiveHostingInputsWithoutDependingOnTheirNames()
+    {
+        var session = Example();
+        HostingSetup.Configure(session.Plan.Providers["hosting"]!, "cloudflare", "cf");
+        Assert.Equal(new[] { "target_image", "target_region", "target_size" },
+            HostingSetup.DeferredInputs(session.Plan).Order(StringComparer.Ordinal));
+        session.Plan.Providers["s3"]!["config"]!["sharedRegion"] = "${{ inputs.target_region }}";
+        session.Plan.Inputs["custom_host_option"] = JsonNode.Parse("""{"type":"string","required":true}""");
+        session.Plan.Steps.First(step => (string?)step?["id"] == "provision_target")!["with"]!["custom"] =
+            "${{ inputs.custom_host_option }}";
+        var deferred = HostingSetup.DeferredInputs(session.Plan);
+        Assert.Contains("custom_host_option", deferred);
+        Assert.DoesNotContain("target_region", deferred);
+        var tasks = PlanSetupWizard.Tasks(session, session.Check(_ => true));
+        Assert.Contains(tasks, task => task.Label == "target_region");
+        Assert.DoesNotContain(tasks, task => task.Label == "custom_host_option");
+        HostingSetup.Configure(session.Plan.Providers["hosting"]!, "hetzner", "hcloud");
+        Assert.Empty(HostingSetup.DeferredInputs(session.Plan));
+        Assert.Contains(PlanSetupWizard.Tasks(session, session.Check(_ => true)),
+            task => task.Label == "custom_host_option");
     }
 
     [Fact]

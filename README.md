@@ -185,6 +185,14 @@ repository with `gh repo clone <owner/repo>`, then run `setup` with the saved
 plan path. Keep GitHub and Cloudflare recovery access independent of the host
 being recovered. GitHub history retains uploaded versions, so review public
 configuration for sensitive infrastructure metadata before publishing.
+The setup screen lists each missing local configuration item and its reason.
+Cloudflare compute selection does not hide Cloudflare/R2, backup, CLI, or
+credential settings behind a workflow warning. Inputs referenced exclusively by
+an incompatible hosting provider are deferred, while shared settings remain
+configurable. Existing drafts need no migration. Deferred inputs remain required
+by the current recovery contract; they are not silently given placeholder values.
+Implementation blockers are shown separately from configuration, so repeating
+setup is not presented as a way to implement a missing recovery adapter.
 **Live recovery and hosting-provider execution remain unimplemented.**
 
 ## Generic Compose recovery plan
@@ -253,6 +261,9 @@ in this application's catalog. `cf` is currently beta; see the
 Wrangler is no longer this application's Cloudflare prerequisite or installer.
 `cf` manages API resources; `cloudflared` remains the separate remote Tunnel
 connector. Coolify and `cloudflared` have vendor-install guidance only.
+Manual guidance opens on a separate screen in a width-aware panel, with URLs
+and commands separated from explanatory text. A single static footer accepts
+Enter, Esc, or Q to return to settings, without redrawing over the instructions.
 The PBS client also has no
 verified Winget package. On Windows, its menu entry gives a guided Debian WSL
 setup: configure Proxmox's signed client-only APT repository for the Debian

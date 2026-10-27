@@ -182,6 +182,12 @@ optional bounded-time `pattern` validation. Invalid entries are rejected before
 being saved. Setup prompts are reusable across plans, not keyed to the primary
 plan ID. Missing tokens can be entered masked for the current process only.
 CLI login and local syntactic validation never imply remote recovery readiness.
+The wizard displays missing configuration items with their reasons, separately
+from target-compatibility and unimplemented-execution blockers. An incompatible
+hosting workflow does not suppress unrelated setup. Input references exclusive
+to that hosting provider's configuration/actions are deferred from guided prompts;
+references also used elsewhere remain configurable. The plan's required-input
+checks and execution blockers remain enforced, including for existing drafts.
 
 Draft export materializes public input values and editable keyvault settings,
 preserves expressions, and rejects secret defaults and known literal credential

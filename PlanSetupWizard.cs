@@ -15,17 +15,15 @@ internal static class PlanSetupWizard
     {
         var setup = PlanSetup.From(session, checks);
         var tasks = new List<SetupTask>();
-        var incompatibleTargets = setup.LocalDependencies.Where(check =>
-            check.Label.StartsWith("target compatibility ", StringComparison.Ordinal) && check.Error is not null).ToArray();
-        if (incompatibleTargets.Length > 0)
-            return incompatibleTargets.Select(check => new SetupTask("guidance", check.Label, check.Error!)).ToArray();
+        var deferredInputs = HostingSetup.DeferredInputs(session.Plan);
         tasks.AddRange(setup.LocalDependencies.Where(check => check.Label.StartsWith("hosting ", StringComparison.Ordinal) &&
             check.Error is not null).Select(check => new SetupTask("hosting", check.Label,
                 "Choose a recovery compute provider. Cloudflare Containers/Sandbox and Linux/VPS providers use different recovery workflows.")));
         tasks.AddRange(setup.LocalDependencies.Where(check => check.Label.StartsWith("CLI ", StringComparison.Ordinal) &&
             check.Error is not null).Select(check => new SetupTask("tool", check.Label,
                 "Install only this plan's required tool. Every installer requires confirmation; no recovery resources are created.")));
-        tasks.AddRange(setup.Inputs.Concat(setup.VaultSettings).Where(field => field.Error is not null)
+        tasks.AddRange(setup.Inputs.Where(field => !deferredInputs.Contains(field.Label)).Concat(setup.VaultSettings)
+            .Where(field => field.Error is not null)
             .Select(field => new SetupTask("field", field.Label, field.Description ?? "Configure this plan requirement.", field)));
         tasks.AddRange(setup.LocalDependencies.Where(check => check.Label.StartsWith("Environment ", StringComparison.Ordinal) &&
             check.Error is not null).Select(check => new SetupTask("environment", check.Label,
@@ -33,9 +31,33 @@ internal static class PlanSetupWizard
         tasks.AddRange(setup.LocalDependencies.Where(check => check.Error is not null &&
             !check.Label.StartsWith("hosting ", StringComparison.Ordinal) &&
             !check.Label.StartsWith("CLI ", StringComparison.Ordinal) &&
+            !check.Label.StartsWith("target compatibility ", StringComparison.Ordinal) &&
             !check.Label.StartsWith("Environment ", StringComparison.Ordinal))
             .Select(check => new SetupTask("guidance", check.Label, check.Error!)));
         return tasks;
+    }
+
+    internal static void ShowStatus(Session session, IReadOnlyList<Check> checks, IReadOnlyList<SetupTask> tasks)
+    {
+        AnsiConsole.WriteLine($"{tasks.Count} local configuration items need attention. Remote access is not verified.");
+        foreach (var task in tasks)
+        {
+            var reason = task.Field?.Error ?? checks.FirstOrDefault(check => check.Label == task.Label)?.Error ?? task.Guidance;
+            AnsiConsole.MarkupLine($"[yellow]- {Markup.Escape(task.Label)}:[/] {Markup.Escape(reason)}");
+        }
+        var deferred = HostingSetup.DeferredInputs(session.Plan);
+        if (deferred.Count > 0)
+            AnsiConsole.WriteLine("Deferred until a compatible hosting workflow is available: " +
+                string.Join(", ", deferred.Order(StringComparer.Ordinal)) + ". These inputs remain required by the current recovery plan.");
+        var blockers = checks.Where(check => check.Error is not null &&
+            (check.Label == "provider host" || check.Label.StartsWith("target compatibility ", StringComparison.Ordinal))).ToArray();
+        if (blockers.Length > 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Implementation blockers (not missing configuration):[/]");
+            foreach (var blocker in blockers)
+                AnsiConsole.WriteLine($"{blocker.Label}: {blocker.Error}");
+            AnsiConsole.WriteLine("Changing credentials or re-running configuration cannot implement these capabilities. You can still configure and save the applicable settings; live recovery remains unavailable.");
+        }
     }
 
     internal static string? ValidateField(Session session, SetupField field, string entered)
@@ -88,21 +110,27 @@ internal static class PlanSetupWizard
             var tasks = Tasks(session, checks);
             AnsiConsole.Clear();
             AnsiConsole.MarkupLine($"{environment.PromptMarkup} [bold aqua]Guided plan setup[/]");
-            AnsiConsole.WriteLine($"{tasks.Count} local requirements need attention. Remote access and recovery execution are not verified.");
+            ShowStatus(session, checks, tasks);
             AnsiConsole.WriteLine("Recommended: private GitHub for the non-secret plan; Cloudflare Secrets Store for credentials.");
             AnsiConsole.WriteLine("Setup never provisions servers, changes DNS, or starts recovery.");
 
             var action = firstPass && tasks.Count > 0 ? "Configure missing requirements" :
                 AnsiConsole.Prompt(new SelectionPrompt<string>().Title("Next setup action").AddChoices(
-                    "Configure missing requirements", "Review hosting selection", "Authentication and secret guidance",
+                    tasks.Count > 0 ? "Configure missing requirements" : "Local configuration complete (review status)",
+                    "Review hosting selection", "Authentication and secret guidance",
                     "Save draft and publish to private GitHub", "Recheck local setup", "Back to configuration"));
             firstPass = false;
             if (action == "Back to configuration") return session;
             try
             {
-                if (action == "Configure missing requirements")
+                if (action is "Configure missing requirements" or "Local configuration complete (review status)")
                 {
-                    if (tasks.Count == 0) AnsiConsole.WriteLine("No missing local requirements. Authentication and provider execution remain unverified.");
+                    if (tasks.Count == 0)
+                    {
+                        AnsiConsole.WriteLine("No missing applicable local configuration. Save/publish the draft or return to configuration; implementation blockers are separate.");
+                        Acknowledge();
+                        continue;
+                    }
                     var backToMenu = false;
                     foreach (var task in tasks)
                     {
@@ -119,14 +147,9 @@ internal static class PlanSetupWizard
                         if (task.Kind == "hosting")
                         {
                             ConfigureHosting(session, task.Label[8..]);
-                            var updated = session.Check();
-                            if (updated.Any(check => check.Label.StartsWith("target compatibility ", StringComparison.Ordinal) &&
-                                check.Error is not null))
-                            {
-                                Save(session);
-                                backToMenu = true;
-                                break;
-                            }
+                            Save(session);
+                            backToMenu = true;
+                            break;
                         }
                         else if (task.Kind == "tool")
                             await CliInstaller.OpenAsync(checks.Where(check => check.Label == task.Label ||

@@ -37,11 +37,23 @@ hardcoded application behavior.
   `setup <plan>` and `s` in configuration are optional shortcuts. Missing
   requirements are prioritized and explained, with validated input prompts,
   required-only installer options, and confirmed vendor-CLI login actions.
+- Implemented: manual CLI installation guidance uses a separate, width-aware
+  panel with distinct instruction/URL paragraphs. Installer return prompts use
+  one static Enter/Esc/Q footer, not a repeatedly rendered single-choice menu
+  that can overwrite wrapped guidance.
 - Implemented: explicit native-CLI hosting selection, including Cloudflare
   Containers/Sandbox with `cf`, initially unselected and blocked. Cloudflare
   selections are saved with a container target kind; the SSH-based reference
-  workflow gets a separate compatibility block and does not continue prompting
-  for Linux-host configuration. A Cloudflare-compatible workflow and adapter
+  workflow gets a separate implementation block and does not continue prompting
+  for Linux-host configuration. The wizard lists actual missing configuration
+  items and reasons instead of collapsing everything behind this block. Common
+  Cloudflare/R2, backup, CLI, and credential settings remain configurable.
+  Inputs referenced exclusively by an incompatible hosting provider are deferred
+  using plan references, not hardcoded input names or plan IDs; shared inputs
+  stay visible. This applies to existing drafts without migration and does not
+  waive execution requirements. Completing local setup does not repeatedly prompt
+  for authentication/publication when only implementation work remains.
+  A Cloudflare-compatible workflow and adapter
   remain unimplemented. Terraform is not used by the primary plan.
   Suggested provider options are selection/configuration only,
   not implemented provisioning adapters.

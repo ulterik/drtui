@@ -269,6 +269,124 @@ public class InteractiveStartupTests
         Assert.Equal(0, input.Remaining);
     }
 
+    [Fact]
+    public async Task CloudflareSetupShowsCommonMissingSettingsAndSeparatesImplementationBlockers()
+    {
+        var document = JsonNode.Parse("""
+            {
+              "metadata":{"id":"placeholder"},
+              "inputs":{
+                "backup_location":{"type":"string","required":true,"description":"Exact backup object"},
+                "vm_flavor":{"type":"string","required":true}
+              },
+              "providers":{"hosting":{"kind":"infrastructure","requiredClis":["cf"],
+                "config":{"provisioning":"native-cli","provider":"cloudflare","clientPath":"cf","targetKind":"cloudflare-container"}}},
+              "steps":[
+                {"uses":"hosting/provision","with":{"flavor":"${{ inputs.vm_flavor }}"}},
+                {"uses":"engine/probeSSH"}
+              ]
+            }
+            """)!.AsObject();
+        document["metadata"]!["id"] = "cloudflare-setup-" + Guid.NewGuid().ToString("N");
+        var session = new Session(new Plan(document));
+        using var writer = new StringWriter();
+        var console = DispatchProxy.Create<IAnsiConsole, ScriptedConsole>();
+        var scripted = (ScriptedConsole)console;
+        scripted.Inner = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.Yes, Interactive = InteractionSupport.Yes, Out = new AnsiConsoleOutput(writer)
+        });
+        scripted.Inner.Profile.Width = 120;
+        var input = new ScriptedInput(new[] { ConsoleKey.DownArrow, ConsoleKey.DownArrow, ConsoleKey.Enter }
+            .Concat(Enumerable.Repeat(ConsoleKey.DownArrow, 5)).Append(ConsoleKey.Enter));
+        scripted.Input = input;
+        var previous = AnsiConsole.Console;
+        try
+        {
+            AnsiConsole.Console = console;
+            Assert.Same(session, await PlanSetupWizard.OpenAsync(session, DrEnvironment.FromValue(null)));
+        }
+        finally { AnsiConsole.Console = previous; }
+        var output = writer.ToString();
+        Assert.Contains("backup_location:", output);
+        Assert.Contains("required input is missing", output);
+        Assert.Contains("Implementation blockers (not missing configuration)", output);
+        Assert.Contains("SSH host recovery", output);
+        Assert.Contains("vm_flavor", output);
+        Assert.DoesNotContain("vm_flavor: required input is missing", output);
+        Assert.DoesNotContain("1 local requirements need attention", output);
+        Assert.DoesNotContain("Review CLI authentication and recovery-secret setup?", output);
+        Assert.Equal("cloudflare", (string?)session.Plan.Providers["hosting"]?["config"]?["provider"]);
+        Assert.Equal(0, input.Remaining);
+    }
+
+    [Fact]
+    public async Task CompletedLocalSetupReviewsImplementationStatusWithoutRestartingAuthenticationOrPublication()
+    {
+        var document = JsonNode.Parse("""
+            {"metadata":{"id":"placeholder"},"inputs":{},"providers":{},"steps":[]}
+            """)!.AsObject();
+        document["metadata"]!["id"] = "completed-setup-" + Guid.NewGuid().ToString("N");
+        var session = new Session(new Plan(document));
+        using var writer = new StringWriter();
+        var console = DispatchProxy.Create<IAnsiConsole, ScriptedConsole>();
+        var scripted = (ScriptedConsole)console;
+        scripted.Inner = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.Yes, Interactive = InteractionSupport.Yes, Out = new AnsiConsoleOutput(writer)
+        });
+        scripted.Inner.Profile.Width = 120;
+        var input = new ScriptedInput(new[] { ConsoleKey.Enter, ConsoleKey.Enter }
+            .Concat(Enumerable.Repeat(ConsoleKey.DownArrow, 5)).Append(ConsoleKey.Enter));
+        scripted.Input = input;
+        var previous = AnsiConsole.Console;
+        try
+        {
+            AnsiConsole.Console = console;
+            await PlanSetupWizard.OpenAsync(session, DrEnvironment.FromValue(null));
+        }
+        finally { AnsiConsole.Console = previous; }
+        var output = writer.ToString();
+        Assert.Contains("0 local configuration items need attention", output);
+        Assert.Contains("Local configuration complete (review status)", output);
+        Assert.Contains("provider host: not implemented", output);
+        Assert.DoesNotContain("Review CLI authentication and recovery-secret setup?", output);
+        Assert.DoesNotContain("Save and offer publication", output);
+        Assert.Equal(0, input.Remaining);
+    }
+
+    [Theory]
+    [InlineData(40, ConsoleKey.Enter)]
+    [InlineData(80, ConsoleKey.Escape)]
+    [InlineData(100, ConsoleKey.Q)]
+    public void ManualInstallerGuidanceUsesOneStaticFooterWithoutRedrawingOverTheInstructions(int width, ConsoleKey exitKey)
+    {
+        using var writer = new StringWriter();
+        var console = DispatchProxy.Create<IAnsiConsole, ScriptedConsole>();
+        var scripted = (ScriptedConsole)console;
+        scripted.Inner = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.Yes, Interactive = InteractionSupport.Yes, Out = new AnsiConsoleOutput(writer)
+        });
+        scripted.Inner.Profile.Width = width;
+        var input = new ScriptedInput([ConsoleKey.DownArrow, exitKey]);
+        scripted.Input = input;
+        var previous = AnsiConsole.Console;
+        try
+        {
+            AnsiConsole.Console = console;
+            CliInstaller.ShowManualGuidance("coolify");
+        }
+        finally { AnsiConsole.Console = previous; }
+        var output = writer.ToString();
+        const string footer = "Enter / Esc / Q: back to settings";
+        Assert.Equal(1, output.Split(footer, StringSplitOptions.None).Length - 1);
+        Assert.Contains("Coolify installation", output);
+        Assert.True(output.IndexOf("Coolify installation", StringComparison.Ordinal) < output.IndexOf(footer, StringComparison.Ordinal));
+        Assert.DoesNotContain("> Back to settings", output);
+        Assert.Equal(0, input.Remaining);
+    }
+
     public class ScriptedConsole : DispatchProxy
     {
         public IAnsiConsole Inner { get; set; } = null!;
