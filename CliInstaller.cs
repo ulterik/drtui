@@ -37,7 +37,7 @@ internal static class CliInstaller
         "The Windows CLI check and PBS runner do not invoke WSL; installing there does not unblock native readiness or live recovery."
     ];
 
-    internal static Table RenderApprovedTools(IReadOnlyList<Check> checks, Func<string, bool> toolExists)
+    internal static Table RenderApprovedTools(IReadOnlyList<Check> checks, Func<string, bool> toolExists, bool requiredOnly = false)
     {
         var table = new Table().Border(TableBorder.Rounded).BorderColor(Color.Teal)
             .AddColumn("[bold aqua]Approved tool[/]")
@@ -47,16 +47,25 @@ internal static class CliInstaller
         foreach (var tool in CliToolCatalog.All)
         {
             var required = checks.FirstOrDefault(check => check.Label == "CLI " + tool.Executable);
+            if (requiredOnly && required is null) continue;
             var status = required?.Error is not null ? "[red]missing[/]" :
                 toolExists(tool.Executable) ? "[green]found[/]" : "[yellow]not installed[/]";
             table.AddRow(Markup.Escape(tool.Name), Markup.Escape(tool.Executable),
                 required is null ? "[grey]optional[/]" : "[bold]required[/]", status);
         }
+        foreach (var check in checks.Where(check => check.Label.StartsWith("CLI ", StringComparison.Ordinal) &&
+            CliToolCatalog.ForExecutable(check.Label[4..]) is null))
+        {
+            var tool = check.Label[4..];
+            table.AddRow("[grey]Plan-declared[/]", Markup.Escape(tool), "[bold]required[/]",
+                check.Error is not null ? "[red]missing[/]" :
+                toolExists(tool) ? "[green]found[/]" : "[yellow]not installed[/]");
+        }
         return table;
     }
 
     internal static IReadOnlyList<CliInstallOption> Options(IReadOnlyList<Check> checks, bool isWindows,
-        bool npmAvailable, Func<string, bool>? toolExists = null)
+        bool npmAvailable, Func<string, bool>? toolExists = null, bool requiredOnly = false)
     {
         if (!isWindows) return [];
 
@@ -65,6 +74,7 @@ internal static class CliInstaller
         foreach (var approved in CliToolCatalog.All)
         {
             var tool = approved.Executable;
+            if (requiredOnly && checks.All(check => check.Label != "CLI " + tool)) continue;
             if (checks.All(check => check.Label != "CLI " + tool || check.Error is null) && toolExists(tool))
                 continue;
             if (approved.WingetPackageId is { } wingetId)
@@ -79,6 +89,10 @@ internal static class CliInstaller
             }
             else options.Add(new CliInstallOption(tool, CliInstallMethod.Manual));
         }
+        options.AddRange(checks.Where(check => check.Label.StartsWith("CLI ", StringComparison.Ordinal) &&
+                check.Error is not null && CliToolCatalog.ForExecutable(check.Label[4..]) is null)
+            .Select(check => check.Label[4..]).Distinct(StringComparer.Ordinal)
+            .Select(tool => new CliInstallOption(tool, CliInstallMethod.Manual)));
         return options;
     }
 
@@ -93,11 +107,11 @@ internal static class CliInstaller
                 command.ArgumentList.Add(argument);
             return command;
         }
-        if (option.Method == CliInstallMethod.Npm && option.Tool == "wrangler")
+        if (option.Method == CliInstallMethod.Npm && option.Tool == CliToolCatalog.Cloudflare.Executable)
         {
             var command = new ProcessStartInfo(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")) { UseShellExecute = false };
-            foreach (var argument in new[] { "/d", "/c", "npm", "install", "--global", "wrangler" })
+            foreach (var argument in new[] { "/d", "/c", "npm", "install", "--global", "cf" })
                 command.ArgumentList.Add(argument);
             return command;
         }
@@ -108,7 +122,8 @@ internal static class CliInstaller
     {
         foreach (var check in checks.Where(check => check.Label.StartsWith("Environment ", StringComparison.Ordinal)))
             command.Environment.Remove(check.Label[12..]);
-        foreach (var variable in new[] { "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "NPM_TOKEN" })
+        foreach (var variable in new[] { "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "NPM_TOKEN",
+            "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "TUNNEL_TOKEN", "COOLIFY_API_TOKEN", "GH_TOKEN", "GITHUB_TOKEN" })
             command.Environment.Remove(variable);
     }
 
@@ -127,11 +142,13 @@ internal static class CliInstaller
         Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine),
         Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User)));
 
-    public static async Task<bool> OpenAsync(IReadOnlyList<Check> checks)
+    public static async Task<bool> OpenAsync(IReadOnlyList<Check> checks, bool requiredOnly = false)
     {
         AnsiConsole.Clear();
-        AnsiConsole.Write(RenderApprovedTools(checks, Session.ToolExists));
-        AnsiConsole.MarkupLine("[grey]Optional tools do not block this plan.[/]");
+        AnsiConsole.Write(RenderApprovedTools(checks, Session.ToolExists, requiredOnly));
+        AnsiConsole.MarkupLine(requiredOnly
+            ? "[grey]Only tools required by this setup step are shown.[/]"
+            : "[grey]Optional tools do not block this plan.[/]");
         if (!OperatingSystem.IsWindows())
         {
             AnsiConsole.MarkupLine("[yellow]Winget installation is available only on Windows.[/]");
@@ -139,7 +156,7 @@ internal static class CliInstaller
             return false;
         }
 
-        var options = Options(checks, true, Session.ToolExists("npm"));
+        var options = Options(checks, true, Session.ToolExists("npm"), requiredOnly: requiredOnly);
         if (options.Count == 0)
         {
             AnsiConsole.MarkupLine("[green]All approved CLI tools are on PATH.[/]");
@@ -169,8 +186,11 @@ internal static class CliInstaller
             }
             var guidance = selected.Tool switch
             {
-                "wrangler" => "Wrangler is distributed via npm, not Winget. Install Node.js LTS with Winget, open a new terminal, then install Wrangler with npm.",
-                _ => "No verified Winget package for this tool. Follow its vendor's installation instructions."
+                "cf" => "Cloudflare cf (beta) is distributed via npm. Install Node.js LTS, open a new terminal, then run npm install --global cf. https://developers.cloudflare.com/cf/",
+                "coolify" => "Install the official Coolify CLI from https://github.com/coollabsio/coolify-cli and add coolify to PATH. No remote installation script runs here.",
+                "cloudflared" => "Install the Tunnel connector from https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/. cf manages Cloudflare resources; it does not replace cloudflared.",
+                _ => HostingSetup.Choices.FirstOrDefault(choice => choice.Executable == selected.Tool)?.Documentation ??
+                    "No verified Winget package for this tool. Follow its vendor's installation instructions."
             };
             AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(selected.Tool)}:[/] {Markup.Escape(guidance)}");
             Back();
@@ -186,7 +206,7 @@ internal static class CliInstaller
 
         var displayCommand = selected.Method == CliInstallMethod.Winget
             ? $"winget install --id {selected.PackageId} --exact --source winget"
-            : "npm install --global wrangler";
+            : "npm install --global cf";
         AnsiConsole.MarkupLine($"[bold]Command:[/] {Markup.Escape(displayCommand)}");
         var confirmation = AnsiConsole.Prompt(new SelectionPrompt<string>()
             .Title("Run this installer in the current terminal?")

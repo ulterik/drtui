@@ -7,11 +7,11 @@ namespace Drtui.Tests;
 public class CliInstallerTests
 {
     [Fact]
-    public void CatalogContainsOnlyTheFiveApprovedToolFamilies()
+    public void CatalogContainsApprovedToolsIncludingTheSeparateTunnelConnector()
     {
-        Assert.Equal(new[] { "Cloudflare", "AWS", "Terraform", "GitHub", "Proxmox" },
+        Assert.Equal(new[] { "Cloudflare", "AWS", "Terraform", "GitHub", "Proxmox", "Coolify", "Cloudflare Tunnel" },
             CliToolCatalog.All.Select(tool => tool.Name));
-        Assert.Equal(new[] { "wrangler", "aws", "terraform", "gh", "proxmox-backup-client" },
+        Assert.Equal(new[] { "cf", "aws", "terraform", "gh", "proxmox-backup-client", "coolify", "cloudflared" },
             CliToolCatalog.All.Select(tool => tool.Executable));
         Assert.Null(CliToolCatalog.ForExecutable("user-defined-tool"));
     }
@@ -23,11 +23,11 @@ public class CliInstallerTests
         var console = AnsiConsole.Create(new AnsiConsoleSettings { Ansi = AnsiSupport.No, Out = new AnsiConsoleOutput(writer) });
         console.Profile.Width = 80;
         console.Write(CliInstaller.RenderApprovedTools(
-            [new Check("CLI wrangler", "missing"), new Check("CLI aws"), new Check("CLI unknown", "missing")],
+            [new Check("CLI cf", "missing"), new Check("CLI aws"), new Check("CLI custom-host", "missing")],
             executable => executable is "aws" or "gh"));
 
         var lines = writer.ToString().Split('\n');
-        Assert.Contains(lines, line => line.Contains("Cloudflare") && line.Contains("wrangler") &&
+        Assert.Contains(lines, line => line.Contains("Cloudflare") && line.Contains("cf") &&
             line.Contains("required") && line.Contains("missing"));
         Assert.Contains(lines, line => line.Contains("AWS") && line.Contains("aws") &&
             line.Contains("required") && line.Contains("found"));
@@ -37,7 +37,7 @@ public class CliInstallerTests
             line.Contains("optional") && line.Contains("found"));
         Assert.Contains(lines, line => line.Contains("Proxmox") && line.Contains("proxmox-backup-client") &&
             line.Contains("optional") && line.Contains("not installed"));
-        Assert.DoesNotContain("unknown", writer.ToString());
+        Assert.Contains(lines, line => line.Contains("custom-host") && line.Contains("required") && line.Contains("missing"));
         Assert.True(lines.Length <= 24, $"Approved tools view exceeds 24 rows:\n{writer}");
         Assert.All(lines, line => Assert.True(line.TrimEnd('\r').Length <= 80, $"Line exceeds 80 columns: {line}"));
     }
@@ -51,7 +51,7 @@ public class CliInstallerTests
 
         Assert.DoesNotContain(options, option => option.Tool == "aws");
         Assert.Contains(options, option => option.Tool == "gh" && option.PackageId == "GitHub.cli");
-        Assert.Contains(options, option => option.Tool == "wrangler" && option.Method == CliInstallMethod.Npm);
+        Assert.Contains(options, option => option.Tool == "cf" && option.Method == CliInstallMethod.Npm);
         Assert.Contains(options, option => option.Tool == "proxmox-backup-client" && option.Method == CliInstallMethod.Manual);
         Assert.Single(checks);
     }
@@ -64,7 +64,7 @@ public class CliInstallerTests
             new Check("CLI aws", "missing"),
             new Check("CLI terraform", "missing"),
             new Check("CLI gh", "missing"),
-            new Check("CLI wrangler", "missing"),
+            new Check("CLI cf", "missing"),
             new Check("CLI proxmox-backup-client", "missing"),
             new Check("CLI user-defined-tool", "missing"),
             new Check("CLI installed-tool")
@@ -74,19 +74,21 @@ public class CliInstallerTests
         Assert.Contains(options, option => option is { Tool: "aws", Method: CliInstallMethod.Winget, PackageId: "Amazon.AWSCLI" });
         Assert.Contains(options, option => option is { Tool: "terraform", Method: CliInstallMethod.Winget, PackageId: "Hashicorp.Terraform" });
         Assert.Contains(options, option => option is { Tool: "gh", Method: CliInstallMethod.Winget, PackageId: "GitHub.cli" });
-        Assert.Contains(options, option => option is { Tool: "wrangler", Method: CliInstallMethod.Npm });
+        Assert.Contains(options, option => option is { Tool: "cf", Method: CliInstallMethod.Npm });
         Assert.Contains(options, option => option is { Tool: "proxmox-backup-client", Method: CliInstallMethod.Manual });
-        Assert.DoesNotContain(options, option => option.Tool == "user-defined-tool");
+        var custom = Assert.Single(options, option => option.Tool == "user-defined-tool");
+        Assert.Equal(CliInstallMethod.Manual, custom.Method);
+        Assert.Throws<InvalidOperationException>(() => CliInstaller.CommandFor(custom));
         Assert.DoesNotContain(options, option => option.Tool == "installed-tool");
         Assert.Empty(CliInstaller.Options(checks, isWindows: false, npmAvailable: true));
     }
 
     [Fact]
-    public void MissingNpmOffersVerifiedNodePrerequisiteWithoutMislabelingWrangler()
+    public void MissingNpmOffersVerifiedNodePrerequisiteWithoutMislabelingCf()
     {
-        var options = CliInstaller.Options([new Check("CLI wrangler", "missing")], isWindows: true, npmAvailable: false);
+        var options = CliInstaller.Options([new Check("CLI cf", "missing")], isWindows: true, npmAvailable: false);
         Assert.Contains(options, option => option is { Tool: "node", Method: CliInstallMethod.Winget, PackageId: "OpenJS.NodeJS.LTS" });
-        Assert.Contains(options, option => option is { Tool: "wrangler", Method: CliInstallMethod.Manual });
+        Assert.Contains(options, option => option is { Tool: "cf", Method: CliInstallMethod.Manual });
     }
 
     [Fact]
@@ -118,10 +120,14 @@ public class CliInstallerTests
         var github = CliInstaller.CommandFor(new CliInstallOption("gh", CliInstallMethod.Winget, "GitHub.cli"));
         Assert.Equal(new[] { "install", "--id", "GitHub.cli", "--exact", "--source", "winget" }, github.ArgumentList.ToArray());
 
-        var npm = CliInstaller.CommandFor(new CliInstallOption("wrangler", CliInstallMethod.Npm));
+        var npm = CliInstaller.CommandFor(new CliInstallOption("cf", CliInstallMethod.Npm));
         Assert.EndsWith("cmd.exe", npm.FileName, StringComparison.OrdinalIgnoreCase);
         Assert.False(npm.UseShellExecute);
-        Assert.Equal(new[] { "/d", "/c", "npm", "install", "--global", "wrangler" }, npm.ArgumentList.ToArray());
+        Assert.Equal(new[] { "/d", "/c", "npm", "install", "--global", "cf" }, npm.ArgumentList.ToArray());
+        Assert.Throws<InvalidOperationException>(() => CliInstaller.CommandFor(
+            new CliInstallOption("wrangler", CliInstallMethod.Npm)));
+        Assert.Throws<InvalidOperationException>(() => CliInstaller.CommandFor(
+            new CliInstallOption("cloudflared", CliInstallMethod.Npm)));
 
         Assert.Throws<InvalidOperationException>(() => CliInstaller.CommandFor(
             new CliInstallOption("user-defined-tool", CliInstallMethod.Winget, "Untrusted.Package")));
@@ -134,7 +140,7 @@ public class CliInstallerTests
     [Fact]
     public void InstallerDoesNotPassPlanTokensToPackageManagers()
     {
-        var command = CliInstaller.CommandFor(new CliInstallOption("wrangler", CliInstallMethod.Npm));
+        var command = CliInstaller.CommandFor(new CliInstallOption("cf", CliInstallMethod.Npm));
         command.Environment["CLOUDFLARE_API_TOKEN"] = "do-not-share";
         command.Environment["AWS_SECRET_ACCESS_KEY"] = "do-not-share";
         command.Environment["NPM_TOKEN"] = "do-not-share";
@@ -144,6 +150,17 @@ public class CliInstallerTests
         Assert.False(command.Environment.ContainsKey("CLOUDFLARE_API_TOKEN"));
         Assert.False(command.Environment.ContainsKey("AWS_SECRET_ACCESS_KEY"));
         Assert.False(command.Environment.ContainsKey("NPM_TOKEN"));
+    }
+
+    [Fact]
+    public void InstallerRemovesProviderCredentialsWithoutAKeyvaultEnvironmentCheck()
+    {
+        var command = CliInstaller.CommandFor(new CliInstallOption("cf", CliInstallMethod.Npm));
+        var variables = new[] { "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "TUNNEL_TOKEN",
+            "COOLIFY_API_TOKEN", "GH_TOKEN", "GITHUB_TOKEN" };
+        foreach (var variable in variables) command.Environment[variable] = "not-for-the-installer";
+        CliInstaller.RemoveSecrets(command, []);
+        Assert.All(variables, variable => Assert.False(command.Environment.ContainsKey(variable)));
     }
 
     [Fact]

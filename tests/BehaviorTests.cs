@@ -22,15 +22,22 @@ public class BehaviorTests
         if (folder == "proxmox-pbs")
         {
             Assert.DoesNotContain(checks, check => check.Label == "CLI aws");
-            Assert.Contains(checks, check => check.Label == "CLI wrangler" && check.Error is not null);
+            Assert.Contains(checks, check => check.Label == "CLI cf" && check.Error is not null);
             Assert.Contains(checks, check => check.Label == "Environment CLOUDFLARE_API_TOKEN" && check.Error is not null);
             Assert.Contains(checks, check => check.Label.StartsWith("keyvault ") && check.Error == "configure a 32-character hex Cloudflare account ID");
         }
         else
         {
-            Assert.Contains(checks, check => check.Label == "CLI aws" && check.Error is not null);
+            Assert.DoesNotContain(checks, check => check.Label == "CLI aws");
+            Assert.Contains(checks, check => check.Label == "CLI cf" && check.Error is not null);
+            Assert.Contains(checks, check => check.Label == "CLI gh" && check.Error is not null);
+            Assert.Contains(checks, check => check.Label == "CLI coolify" && check.Error is not null);
+            Assert.DoesNotContain(checks, check => check.Label == "CLI terraform");
+            Assert.Contains(checks, check => check.Label.StartsWith("hosting ", StringComparison.Ordinal) && check.Error is not null);
+            Assert.DoesNotContain(checks, check => check.Label == "CLI cloudflared");
             Assert.DoesNotContain(checks, check => check.Label == "CLI wrangler");
-            Assert.Contains(checks, check => check.Label.StartsWith("keyvault ") && check.Error is null);
+            Assert.Contains(checks, check => check.Label.StartsWith("keyvault ") && check.Error == "configure a 32-character hex Cloudflare account ID");
+            Assert.Contains(checks, check => check.Label == "Environment CLOUDFLARE_API_TOKEN" && check.Error is not null);
         }
     }
 
@@ -41,7 +48,7 @@ public class BehaviorTests
         var checks = new Session(new Plan(document)).Check(_ => false);
 
         Assert.Contains(checks, check => check.Label == "CLI gh" && check.Error is not null);
-        Assert.DoesNotContain(checks, check => check.Label is "CLI aws" or "CLI wrangler" or "CLI terraform" or "CLI proxmox-backup-client");
+        Assert.DoesNotContain(checks, check => check.Label is "CLI aws" or "CLI cf" or "CLI terraform" or "CLI proxmox-backup-client");
     }
 
     [Fact]
@@ -172,6 +179,7 @@ public class BehaviorTests
     public void InvalidInputOverrideIsRejected()
     {
         var session = new Session(PlanLoader.Load(Path.Combine(Root, "examples", "coolify-s3-cloudflare", "plan.drp.yaml")));
+        session.Plan.Inputs["previous_primary_ip"] = JsonNode.Parse("""{"type":"ip","required":true}""");
         session.Inputs["previous_primary_ip"] = "\"not an IP\"";
         Assert.Contains(session.Check(_ => true), check => check.Label == "input previous_primary_ip" && check.Error is not null);
         session.Inputs["previous_primary_ip"] = "\"203.0.113.8\"";
@@ -181,7 +189,16 @@ public class BehaviorTests
     [Fact]
     public void LocalEditsRecheckInputsWithoutRerunningUnchangedAwsProfile()
     {
-        var session = new Session(PlanLoader.Load(Path.Combine(Root, "examples", "coolify-s3-cloudflare", "plan.drp.yaml")));
+        var session = new Session(new Plan(JsonNode.Parse("""
+            {
+              "inputs":{"previous_primary_ip":{"type":"ip","required":true}},
+              "providers":{"aws_secrets":{"kind":"keyvault","config":{"region":"test-region"}}},
+              "steps":[
+                {"uses":"aws_secrets/initialize","with":{"authConfig":{"method":"aws-cli-profile","parameters":{"profile":"disaster-recovery"}}}},
+                {"uses":"aws_secrets/fetchPlanSecrets"}
+              ]
+            }
+            """)!.AsObject()));
         session.Inputs["previous_primary_ip"] = "\"invalid\"";
         var previous = new[] { new Check("AWS profile disaster-recovery") };
 
@@ -247,7 +264,7 @@ public class BehaviorTests
         var checks = session.Check(_ => true, name => name == "CLOUDFLARE_API_TOKEN" ? "hidden-token-value" : null);
         Assert.Contains(checks, check => check.Label.StartsWith("keyvault ") && check.Error is null);
         Assert.Contains(checks, check => check.Label == "Environment CLOUDFLARE_API_TOKEN" && check.Error is null);
-        Assert.Contains(checks, check => check.Label == "CLI wrangler" && check.Error is null);
+        Assert.Contains(checks, check => check.Label == "CLI cf" && check.Error is null);
         Assert.DoesNotContain(checks, check => check.Label == "CLI aws");
         Assert.DoesNotContain("hidden-token-value", string.Join(" ", checks));
 
@@ -287,7 +304,7 @@ public class BehaviorTests
         Assert.DoesNotContain("Value", settingsHeader);
         Assert.Contains("Value:", display);
         Assert.Contains("Inputs", display);
-        Assert.Contains("default (unverified)", display);
+        Assert.Contains(folder == "proxmox-pbs" ? "default (unverified)" : "missing", display);
         Assert.Contains("Live recovery unavailable", display);
         Assert.Contains("I install", display);
         Assert.DoesNotContain("Edit pbs_archive", display);
@@ -299,16 +316,16 @@ public class BehaviorTests
             Assert.Contains("Cloudflare account ID", display);
             Assert.Contains("Keyvault settings", display);
             Assert.Contains("proxmox-backup-client", display);
-            Assert.Contains("wrangler", display);
+            Assert.Contains("cf", display);
             Assert.DoesNotContain("PBS_API_TOKEN", display);
             Assert.DoesNotContain("CLI aws", display);
             Assert.DoesNotContain("PBS_FINGERPRINT", display);
         }
         else
         {
-            Assert.Contains("aws", display);
+            Assert.DoesNotContain("aws", display);
             Assert.DoesNotContain("wrangler", display);
-            Assert.Contains("previous_primary_ip", display);
+            Assert.Contains("cloudflare_account_id", display);
             Assert.DoesNotContain("CLOUDFLARE_API_TOKEN", display);
             Assert.DoesNotContain("PBS_API_TOKEN", display);
         }
@@ -318,7 +335,9 @@ public class BehaviorTests
         var scrolled = writer.ToString();
         Assert.Contains("Secrets", scrolled);
         Assert.Contains("not verified", scrolled);
-        Assert.Contains("Keyvault settings", scrolled);
+        writer.GetStringBuilder().Clear();
+        console.Write(PlanConfiguration.Render(session, setup, width, setup.Inputs.Count));
+        Assert.Contains("Keyvault settings", writer.ToString());
         Assert.True(scrolled.Split('\n').Length <= 24, $"Scrolled configuration exceeds 24 rows at {width} columns:\n{scrolled}");
         Assert.All(scrolled.Split('\n'), line => Assert.True(line.TrimEnd('\r').Length <= width, $"Line exceeds {width} columns: {line}"));
         if (folder == "proxmox-pbs")
@@ -500,11 +519,11 @@ public class BehaviorTests
     public void EditingAStringAcceptsPlainTextAndHighlightsMissingValues()
     {
         var session = new Session(PlanLoader.Load(Path.Combine(Root, "examples", "coolify-s3-cloudflare", "plan.drp.yaml")));
-        var field = PlanSetup.From(session, session.Check(_ => true)).Inputs.Single(item => item.Label == "previous_primary_ip");
-        field.Save(PlanConfiguration.Encode(field, "203.0.113.8"));
-        Assert.Equal("\"203.0.113.8\"", session.Inputs["previous_primary_ip"]);
-        var changed = PlanSetup.From(session, session.Check(_ => true)).Inputs.Single(item => item.Label == "previous_primary_ip");
-        Assert.Equal("203.0.113.8", changed.DisplayValue);
+        var field = PlanSetup.From(session, session.Check(_ => true)).Inputs.Single(item => item.Label == "cloudflare_account_id");
+        field.Save(PlanConfiguration.Encode(field, "0123456789abcdef0123456789abcdef"));
+        Assert.Equal("\"0123456789abcdef0123456789abcdef\"", session.Inputs["cloudflare_account_id"]);
+        var changed = PlanSetup.From(session, session.Check(_ => true)).Inputs.Single(item => item.Label == "cloudflare_account_id");
+        Assert.Equal("0123456789abcdef0123456789abcdef", changed.DisplayValue);
         Assert.False(changed.IsDefault);
 
         using var writer = new StringWriter();
@@ -515,12 +534,12 @@ public class BehaviorTests
 
         field.Save(PlanConfiguration.Encode(field, ""));
         var updated = PlanSetup.From(session, session.Check(_ => true));
-        Assert.Equal("required input is missing", updated.Inputs.Single(item => item.Label == "previous_primary_ip").Error);
+        Assert.Equal("required input is missing", updated.Inputs.Single(item => item.Label == "cloudflare_account_id").Error);
 
         writer.GetStringBuilder().Clear();
         console.Write(PlanConfiguration.Render(session, updated, 80, 2));
         Assert.Contains("required input is missing", writer.ToString());
-        Assert.Contains("previous_primary_ip", writer.ToString());
+        Assert.Contains("cloudflare_account_id", writer.ToString());
     }
 
     [Fact]

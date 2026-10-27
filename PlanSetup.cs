@@ -69,13 +69,15 @@ internal sealed record PlanSetup(
             else if (vault.AuthMethod == "cloudflare-api-token")
             {
                 vaultSettings.Add(new SetupField(name + " / Cloudflare account ID", "text", vault.AccountId,
-                    "Cloudflare account containing the PBS API token in Secrets Store.",
+                    "Cloudflare account containing the plan's recovery secrets in Secrets Store.",
                     Session.ValidateCloudflareAccountId(vault.AccountId), true, false,
                     value => session.Vaults[name] = session.Vaults[name] with { AccountId = value ?? "" }));
             }
         }
 
         var dependencies = checks.Where(check => check.Label.StartsWith("CLI ", StringComparison.Ordinal) ||
+            check.Label.StartsWith("hosting ", StringComparison.Ordinal) ||
+            check.Label.StartsWith("target compatibility ", StringComparison.Ordinal) ||
             check.Label.StartsWith("AWS profile ", StringComparison.Ordinal) ||
             check.Label.StartsWith("Environment ", StringComparison.Ordinal) ||
             check.Label.StartsWith("keyvault ", StringComparison.Ordinal) &&
@@ -95,7 +97,7 @@ internal sealed record PlanSetup(
                     .Order(StringComparer.Ordinal).ToArray() ?? []))
             .Where(requirement => requirement.Names.Length > 0).ToArray();
 
-        var publicKeys = new[] { "server", "port", "datastore", "namespace", "region", "accountId", "workingDirectory", "checksumMode", "releaseChannel", "ttlSeconds" };
+        var publicKeys = new[] { "server", "port", "datastore", "namespace", "region", "accountId", "endpoint", "profile", "provider", "clientPath", "targetKind", "provisioning", "workingDirectory", "checksumMode", "releaseChannel", "ttlSeconds" };
         var providers = session.Plan.Providers.OrderBy(item => item.Key, StringComparer.Ordinal)
             .Select(provider =>
             {

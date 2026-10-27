@@ -13,6 +13,13 @@ execution package, holds transient state in memory, and emits an append-only run
 journal to a caller-selected path or stdout. It has no control-plane database,
 daemon, or implicit remote state.
 
+Plan preparation is distinct from execution: guided setup saves explicit,
+non-secret local drafts in a user-restricted application-data directory and
+can publish them to an explicitly confirmed private GitHub repository. These
+editable drafts are not journals, resumable execution state, or immutable
+signed packages. Credentials remain in the keyvault, vendor CLI credential
+stores, or process-only bootstrap environment, never in the saved plan.
+
 The same package, inputs, provider binaries, and external starting state must
 produce the same action graph and invocation payloads. External systems can
 still change independently, so providers must implement idempotency and report
@@ -30,6 +37,9 @@ drtui/
 |-- PlanPicker.cs                   Interactive plan browser
 |-- PlanPreview.cs                  Plan summaries for the browser
 |-- Session.cs                      Inputs, tool checks, and AWS profiles
+|-- PlanSetupWizard.cs              Guided setup and confirmed authentication
+|-- HostingSetup.cs                 Explicit native-CLI hosting selection
+|-- PlanStorage.cs                  Restricted drafts and private GitHub publication
 |-- PbsClient.cs                    Standalone PBS command adapter
 |-- tests/                          .NET unit tests
 |-- api/proto/provider/v1/          Proposed out-of-process RPC protocol
@@ -123,6 +133,82 @@ with that key. Random retry jitter is disallowed; fixed exponential backoff is
 allowed because it does not alter action payloads or ordering.
 
 ## Provider model
+
+### Local CLI prerequisites and Compose inventory
+
+Providers can declare `requiredClis` as a unique list of local executable names.
+This generic field is independent of provider source names, so hosting providers
+can require their own tools without changing application code. An explicit list
+replaces legacy source-name inference for that provider; omitted lists retain
+existing checks. Authentication-derived CLI requirements are always added.
+Declarations never become process arguments or automatic installation commands.
+Unknown CLIs get PATH checks and manual guidance; only catalogued, fixed package
+commands are installable after confirmation.
+
+Cloudflare's local resource CLI is `cf`, not Wrangler. `cloudflared` is a
+separate remote connector. The Compose example requires local `gh`, `coolify`,
+and `cf`, plus the explicitly selected Linux/VPS provider's CLI. It requires
+neither `aws` nor `terraform`. A `native-cli` infrastructure provider remains
+blocked until its provider/client selection is valid and declared in
+`requiredClis`. Cloudflare is selectable with `cf` and target kind
+`cloudflare-container`; a plan containing `engine/probeSSH` gets a separate
+target-compatibility block. Containers/Sandbox Linux microVM compute uses
+Workers/Durable Objects rather than this plan's SSH interface. Setup preserves
+the selection without claiming an implemented adapter or continuing with
+inapplicable Linux-host questions.
+Remote Docker daemon, Compose v2, and connector checks belong to the planned
+runtime provider. Local PATH presence never implies authentication or remote
+readiness.
+
+The reference plan consumes the generic
+[recovery inventory schema](../schemas/recovery-manifest.schema.json).
+GitHub commits pin Compose definitions; immutable S3-compatible object keys and
+SHA-256 hashes pin backup artifacts. Applications and databases are separate
+workload kinds. Backup format, engine/image compatibility, volume mappings,
+consistency provenance, and read-only verification must be explicit, not inferred
+from provider names. The manifest schema is currently a tested contract; fetching
+and semantic validation require the future storage/application providers.
+
+R2 and the keyvault are separate provider choices. The example uses Cloudflare
+R2 Infrequent Access through its S3 endpoint and Cloudflare Secrets Store as
+its keyvault. The S3 client receives leased R2 credentials; S3 compatibility
+requires neither an AWS account nor the AWS CLI. AWS support remains optional
+for other plans. Terraform is optional for unrelated plans, not part of this
+reference recovery workflow. The guided installer filters to the current
+plan's requirements instead of promoting optional infrastructure tools.
+
+Guided input prompts use the plan's descriptions, required/type checks, and
+optional bounded-time `pattern` validation. Invalid entries are rejected before
+being saved. Setup prompts are reusable across plans, not keyed to the primary
+plan ID. Missing tokens can be entered masked for the current process only.
+CLI login and local syntactic validation never imply remote recovery readiness.
+
+Draft export materializes public input values and editable keyvault settings,
+preserves expressions, and rejects secret defaults and known literal credential
+fields. Draft writes are atomic inside a restricted user directory. GitHub
+setup uses `gh repo view` and paginated `gh api user/repos` discovery to offer
+writable private repositories across personal, organization, and collaborator
+access, prioritizing the saved selection and current repository. Authentication
+failures offer confirmed browser login; discovery errors are explicit, not empty
+repository lists. Existing repository identifiers do not need to be typed.
+The same picker can create an empty private repository using `gh repo create`,
+after discovering the authenticated account and paginated organization memberships.
+The user chooses the owner and repository name and explicitly confirms creation.
+Organization permissions/policies remain authoritative; failures never trigger
+an alternate owner or public repository. Creation verifies name, privacy, and write
+access and does not push local code. Upload still requires a separate confirmation. GitHub
+publication rechecks an existing repository's privacy and previous blob SHA
+before a confirmed Contents API update, sends content over stdin, and requires
+the expected path and blob digest in the response. Publication failures leave
+the local draft available and are reported explicitly.
+
+Tunnel cutover does not use a recovered host's public IP. After local application
+verification, create and configure a new tunnel, start its `cloudflared` connector
+with a leased token, and verify it before moving hostname routes. Snapshot exact
+old records and use compare-before-write semantics for cutover and compensation.
+Keep the old tunnel intact. Deleting the run-owned replacement tunnel compensates
+its ingress configuration; providers must clean up partial mutations internally
+when an action fails before the scheduler can register its compensation.
 
 There is no in-process provider host contract yet. The standalone
 [PbsClient.cs](../PbsClient.cs) exposes typed requests and results, an injected

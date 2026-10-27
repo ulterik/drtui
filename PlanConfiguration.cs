@@ -13,10 +13,15 @@ internal static class PlanConfiguration
     }
     private const int PageSize = 4;
 
-    public static async Task OpenAsync(Session session, DrEnvironment? environment = null)
+    public static async Task OpenAsync(Session session, DrEnvironment? environment = null, bool startWithSetup = false)
     {
         environment ??= DrEnvironment.FromValue(null);
         var checks = await RecheckAsync(session, environment);
+        if (startWithSetup || PlanSetupWizard.Tasks(session, checks).Count > 0)
+        {
+            session = await PlanSetupWizard.OpenAsync(session, environment);
+            checks = await RecheckAsync(session, environment);
+        }
         var selected = 0;
         while (true)
         {
@@ -37,7 +42,7 @@ internal static class PlanConfiguration
                         var (next, command) = TuiNavigation.Reduce(selected, rows.Count,
                             TuiNavigation.BufferedKeys(key.Value.Key, input), Move,
                             static value => value is ConsoleKey.Enter or ConsoleKey.Escape or ConsoleKey.Q
-                                or ConsoleKey.P or ConsoleKey.R or ConsoleKey.I or ConsoleKey.C);
+                                or ConsoleKey.P or ConsoleKey.R or ConsoleKey.I or ConsoleKey.C or ConsoleKey.S);
                         if (next != selected)
                         {
                             selected = next;
@@ -50,6 +55,12 @@ internal static class PlanConfiguration
                 });
 
             if (key is null or ConsoleKey.Escape or ConsoleKey.Q) return;
+            if (key == ConsoleKey.S)
+            {
+                session = await PlanSetupWizard.OpenAsync(session, environment);
+                checks = await RecheckAsync(session, environment);
+                continue;
+            }
             if (key == ConsoleKey.P)
             {
                 ShowProviders(setup.ProviderBindings, environment);
@@ -114,9 +125,19 @@ internal static class PlanConfiguration
         {
             var toolTable = new Table().Border(TableBorder.Rounded).BorderColor(Color.Teal)
                 .AddColumn("[bold aqua]CLI tools[/]").AddColumn("[bold aqua]Value[/]").AddColumn("[bold aqua]Status[/]");
-            foreach (var tool in tools)
-                toolTable.AddRow(Markup.Escape(Shorten(tool.Label[4..], Math.Max(20, width / 2))), "PATH",
-                    tool.Error is null ? "[green]found[/]" : "[red]missing[/]");
+            var columns = tools.Length > 3 ? 2 : 1;
+            if (columns == 2)
+                toolTable.AddColumn("[bold aqua]CLI tools[/]").AddColumn("[bold aqua]Value[/]").AddColumn("[bold aqua]Status[/]");
+            foreach (var group in tools.Chunk(columns))
+            {
+                var cells = group.SelectMany(tool => new[]
+                {
+                    Markup.Escape(Shorten(tool.Label[4..], Math.Max(12, width / columns - 26))), "PATH",
+                    tool.Error is null ? "[green]found[/]" : "[red]missing[/]"
+                }).ToList();
+                while (cells.Count < columns * 3) cells.Add("");
+                toolTable.AddRow(cells.ToArray());
+            }
             lines.Add(toolTable);
         }
 
@@ -142,7 +163,7 @@ internal static class PlanConfiguration
 
         lines.Add(Detail($"Providers: {string.Join(", ", session.Plan.Providers.Select(item => item.Key))} (P to view)", width));
         lines.Add(new Markup("[yellow]Live recovery unavailable:[/] [grey]provider host not implemented.[/]"));
-        lines.Add(new Markup("[grey]Up/Down | Enter edit | C command | I install | P providers | R check | Esc[/]"));
+        lines.Add(new Markup("[grey]Up/Down | Enter edit | S setup | C command | I install | P providers | R | Esc[/]"));
         return new Rows(lines);
     }
 
@@ -222,7 +243,7 @@ internal static class PlanConfiguration
         return $"{check.Label}: {check.Error}";
     }
 
-    private static void Edit(SetupField field, DrEnvironment environment)
+    internal static void Edit(SetupField field, DrEnvironment environment, Func<string, string?>? validate = null)
     {
         AnsiConsole.MarkupLine($"[bold]{Markup.Escape(field.Label)}[/] [grey]({Markup.Escape(field.Type)})[/]");
         if (!string.IsNullOrWhiteSpace(field.Description))
@@ -232,6 +253,9 @@ internal static class PlanConfiguration
         var current = field.RawValue is null ? "" : plainText ? field.DisplayValue : field.RawValue;
         var prompt = new TextPrompt<string>($"{environment.PromptMarkup} " +
             (plainText ? "Value:" : "JSON value:")).AllowEmpty();
+        if (validate is not null)
+            prompt.Validate(entered => validate(entered) is { } error
+                ? ValidationResult.Error(Markup.Escape(error)) : ValidationResult.Success());
         if (current.Length > 0) prompt.DefaultValue(current);
         var entered = AnsiConsole.Prompt(prompt);
         field.Save(Encode(field, entered));

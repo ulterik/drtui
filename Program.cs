@@ -16,6 +16,12 @@ try
         DrCommandPrompt.Open(environment);
         return 0;
     }
+    if (argsList.FirstOrDefault() == "setup")
+    {
+        if (argsList.Length != 2) throw new InvalidDataException("Usage: drtui setup <plan.drp.yaml>");
+        await PlanSetupWizard.OpenAsync(new Session(PlanLoader.Load(argsList[1])), environment);
+        return 0;
+    }
     var checkOnly = argsList.FirstOrDefault() == "check";
     var root = (checkOnly ? argsList.Skip(1) : argsList).FirstOrDefault() ?? "examples";
     if (checkOnly)
@@ -37,10 +43,12 @@ try
     {
         var paths = PlanLoader.Discover(root);
         if (paths.Length == 0) throw new InvalidDataException($"No plan.drp.yaml files found in {root}");
-        var selection = PlanPicker.Select(paths.Select(PlanPreview.Load).ToArray(), environment);
+        var startWithSetup = argsList.Length == 0;
+        var selection = PlanPicker.Select(paths.Select(PlanPreview.Load).ToArray(), environment, startWithSetup);
         if (selection is null) break;
-        try { await PlanConfiguration.OpenAsync(new Session(selection.Plan!), environment); }
-        catch (Exception error) when (error is InvalidDataException or IOException or YamlDotNet.Core.YamlException)
+        try { await PlanConfiguration.OpenAsync(new Session(selection.Plan!), environment, startWithSetup); }
+        catch (Exception error) when (error is InvalidDataException or IOException or YamlDotNet.Core.YamlException or
+            UnauthorizedAccessException or System.ComponentModel.Win32Exception or System.Text.Json.JsonException or OperationCanceledException)
         {
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(error.Message)}[/]");
         }

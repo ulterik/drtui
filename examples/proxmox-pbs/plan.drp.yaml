@@ -31,6 +31,7 @@ inputs:
 providers:
   recovery_secrets:
     kind: keyvault
+    requiredClis: [cf]
     source: oci://ghcr.io/drtui/cloudflare-secrets-provider
     version: 0.1.0
     digest: sha256:7777777777777777777777777777777777777777777777777777777777777777
@@ -38,6 +39,7 @@ providers:
       accountId: ""
   pbs:
     kind: backup
+    requiredClis: [proxmox-backup-client]
     source: oci://ghcr.io/drtui/proxmox-backup-provider
     version: 0.1.0
     digest: sha256:6666666666666666666666666666666666666666666666666666666666666666

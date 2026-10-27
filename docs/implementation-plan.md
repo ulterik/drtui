@@ -7,11 +7,62 @@ not existing directories unless explicitly identified as implemented.
 
 ## Outcome
 
-Deliver a stateless CLI that can validate, package, inspect, and execute the
-Coolify-to-S3-to-Cloudflare recovery plan using digest-pinned, out-of-process
+Deliver a generic stateless CLI that can validate, package, inspect, and execute
+provider-configured recovery plans using digest-pinned, out-of-process
 providers. Every component must be testable without live cloud credentials, and
 the complete workflow must be rehearsable against a disposable Linux server and
 a non-production DNS zone.
+
+The primary example restores GitHub-managed Docker Compose applications and
+databases, restores Coolify configuration and database backups from Cloudflare
+R2's S3-compatible storage, then creates a replacement Cloudflare Tunnel and
+moves hostname routes only after verification. Hosting, storage endpoints,
+keyvaults, backup formats, and workload lists are replaceable plan data, not
+hardcoded application behavior.
+
+### Current implementation slice
+
+- Implemented: provider `requiredClis` schema and local PATH checks, generic
+  manual-install guidance for uncatalogued hosting CLIs, and confirmed installers
+  for catalogued tools. Omitted declarations retain legacy inference.
+- Implemented: Cloudflare CLI prerequisite/installer now uses `cf`
+  (`npm install --global cf`, currently beta), with `cloudflared` separately
+  identified as the Tunnel connector. Neither is automatically installed.
+- Implemented: the reference plan and tested recovery inventory JSON Schema model
+  exact GitHub Compose revisions, explicit per-database backup formats, and
+  replacement-tunnel cutover with exact prior-record compensation.
+- Implemented: plain `dotnet run` opens interactive plan selection and enters
+  guided setup directly, without a separate command, special key, or setup
+  opt-in. Explicit plan paths also enter setup automatically when incomplete.
+  `setup <plan>` and `s` in configuration are optional shortcuts. Missing
+  requirements are prioritized and explained, with validated input prompts,
+  required-only installer options, and confirmed vendor-CLI login actions.
+- Implemented: explicit native-CLI hosting selection, including Cloudflare
+  Containers/Sandbox with `cf`, initially unselected and blocked. Cloudflare
+  selections are saved with a container target kind; the SSH-based reference
+  workflow gets a separate compatibility block and does not continue prompting
+  for Linux-host configuration. A Cloudflare-compatible workflow and adapter
+  remain unimplemented. Terraform is not used by the primary plan.
+  Suggested provider options are selection/configuration only,
+  not implemented provisioning adapters.
+- Implemented: atomic non-secret local drafts with restrictive user permissions,
+  resume prompts, and explicitly confirmed publication to a private
+  GitHub repository. Setup discovers writable private repositories through `gh`,
+  including organization/collaborator access, rather than asking for `owner/repo`.
+  Saved/current repositories are prioritized, and missing CLI/authentication
+  offers installation guidance/browser login. Credentials remain outside plans; bootstrap token entry is
+  masked and process-only. Publication verifies privacy, concurrency SHA, and
+  the returned path/digest, and reports failures without claiming success.
+- Implemented: the GitHub repository picker also offers creation of an empty
+  private repository, including when no existing repositories are found. `gh`
+  discovers the authenticated account and organization memberships; setup prompts
+  for the owner/name, requires explicit creation confirmation, and verifies the
+  resulting repository's name, privacy, and write access. Organization policy or
+  permission failures are explicit, with no owner/visibility fallback. Creation
+  does not push local code; plan publication requires a separate confirmation.
+- Not implemented: provider actions, fetching/semantic validation of remote
+  inventories, remote prerequisite installation/probes, or live recovery.
+  Example required inputs remain unset and provider digests remain placeholders.
 
 The work should land as small vertical changes. A phase is complete only when
 its tests and command-level acceptance criteria pass; later phases must not be
@@ -31,14 +82,18 @@ used to compensate for an untestable earlier layer.
 5. Tests use three destination tiers:
    - An in-process SSH server for default, network-local tests.
    - A Docker Linux SSH server for transport and remote-operation integration.
-   - A disposable AWS EC2 Ubuntu host for the full Coolify rehearsal.
+   - A disposable Ubuntu host from the selected hosting provider for the full Coolify rehearsal.
 6. The production example remains signature-required. Test plans live under
    `testdata` and refer to locally built plugins with generated real digests.
 7. No test changes a production DNS record or reads production backup objects.
 
-AWS is the default cloud rehearsal target because the reference plan already
-uses S3 and AWS Secrets Manager. The infrastructure contract remains cloud
-neutral, so another destination can replace EC2 later.
+The reference plan uses Cloudflare R2 for backup objects and Cloudflare Secrets
+Store for recovery secrets. It requires no AWS account, AWS CLI, or AWS profile.
+R2's S3-compatible API uses leased Cloudflare R2 credentials, not AWS credentials.
+The hosting destination and its region are selected through the infrastructure
+provider's native CLI; no AWS or Terraform destination is assumed. Other plans
+may explicitly opt into those tools. Saved plan preparation is distinct from
+the future stateless execution engine.
 
 ## Intended repository layout
 
@@ -56,7 +111,7 @@ C# types checked into a dedicated project when introduced.
 | --- | --- | --- | --- |
 | Unit | `dotnet test tests/Drtui.Tests.csproj` | No external network | Current plan, readiness, and PBS tests; expand for engine and redaction |
 | Integration | Planned .NET test project | Loopback/Docker | Plugin processes, gRPC, LocalStack/MinIO, fake Cloudflare API, Linux SSH target |
-| System | Planned .NET test project | AWS/test DNS zone | Provision VM, install Coolify, restore synthetic data, cut over test DNS, rollback |
+| System | Planned .NET test project | Selected host/test DNS zone | Provision VM, install Coolify, restore synthetic data, cut over test DNS, rollback |
 | Compatibility | Planned .NET conformance suite | Plugin-defined | Contract suite external plugin authors can import |
 
 Default tests must pass when Docker, cloud credentials, Terraform, and `protoc`
@@ -134,30 +189,30 @@ port, command timeout, oversized output, interrupted upload, and cleanup after
 cancellation. The current workstation has the Docker CLI but its daemon is not
 reachable, so enabling Docker Desktop is a prerequisite for this tier locally.
 
-### Tier 3: disposable AWS destination
+### Tier 3: disposable hosting-provider destination
 
-Create a test-only Terraform module that provisions one Ubuntu 24.04 EC2
-instance, an encrypted root volume, and a security group restricted to the
+Create a test-only native-CLI adapter for the selected hosting provider that
+provisions one Ubuntu 24.04 instance, an encrypted root volume, and a firewall restricted to the
 runner's current public IP. Tag every resource with `drtui-test`, run ID,
 owner, and an expiry timestamp. A scheduled janitor deletes expired resources.
 
 Generate a client key in memory, register only its public key, and publish the
-SSH host-key fingerprint through the authenticated AWS control plane using SSM
+SSH host-key fingerprint through the hosting provider's authenticated control plane
 before direct SSH begins. Do not use `StrictHostKeyChecking=no`, trust-on-first-
-use, embedded keys, or a private key persisted in Terraform state.
+use, embedded keys, or a private key persisted in provider state.
 
 The first cloud system test executes only through `verify_target` and proves:
 
-- Terraform provision output decodes into `ProvisionResult`.
+- Native-CLI JSON output decodes into `ProvisionResult`.
 - The returned public IP is reachable on the restricted SSH port.
-- The host fingerprint obtained through AWS matches the SSH handshake.
+- The host fingerprint obtained through the selected provider matches the SSH handshake.
 - Authentication, command execution, SFTP round trip, disk check, and HTTPS
   egress succeed.
-- Rollback destroys the instance, volume, key registration, and security group.
+- Rollback destroys the instance, volume, key registration, and firewall.
 
 The full system test later reuses this destination for Coolify. It must run in a
-dedicated AWS account or sandbox OU with a budget alarm and no production VPC
-peering.
+dedicated sandbox project/account with a budget alarm and no production network
+peering. Its hosting-provider CLI is required only when that provider declares it.
 
 ## Phased implementation
 
@@ -266,7 +321,22 @@ Tests and gate:
 
 ### Phase 5: providers, one vertical slice at a time
 
-#### AWS Secrets Manager
+#### Cloudflare Secrets Store
+
+The primary plan uses this keyvault, initialized through an explicitly named
+bootstrap token environment variable and a configured Cloudflare account ID.
+The local prerequisite is `cf`. Provider `initialize` verifies remote account
+access; `fetchPlanSecrets` leases the Coolify encryption key, recovery Cloudflare
+API token, and R2 S3 access-key ID/secret. Never expose them in process arguments,
+plan values, or journals. Readiness currently checks only local token presence
+and account-ID syntax, not remote authentication.
+
+Advertised actions: `initialize`, `fetchPlanSecrets`.
+
+Tests use a fake Cloudflare API and cover account scope, denied access, missing
+secrets, lease expiry, cancellation, and redaction.
+
+#### AWS Secrets Manager (optional provider for other plans)
 
 Use the AWS SDK for .NET. `initialize` loads the selected credential chain and calls
 STS `GetCallerIdentity`. `fetchPlanSecrets` reads one configured secret document
@@ -281,18 +351,45 @@ cancellation, and zero secret bytes in logs or journals.
 
 #### S3-compatible storage
 
-Use the AWS SDK for .NET with optional endpoint, region, path-style, and TLS policy
-for S3, R2, Garage, and MinIO. Parse storage URIs structurally. Download to a
+Use an S3-compatible .NET client with optional endpoint, region, path-style, and
+TLS policy for S3, R2, Garage, and MinIO. The primary R2 plan supplies leased
+Cloudflare access-key credentials; no AWS CLI, profile, or account is required.
+Parse storage URIs structurally. Download to a
 same-directory temporary file, stream with limits, verify a required checksum,
 `fsync`, atomically rename, and remove partial files on every failure.
 
 Advertised action: `downloadBlob`.
 
+Add `readRecoveryManifest`: verify the supplied SHA-256, validate against
+`schemas/recovery-manifest.schema.json`, and reject duplicate workload IDs,
+invalid hostnames, unsafe paths, and unresolved workload/volume references.
+Return typed workloads and tunnel routes. Object keys must identify exact
+backups; never silently select `latest`. R2 Infrequent Access does not require
+an AWS Glacier thaw workflow; account for retrieval fees separately.
+
 Unit tests use a fake client; integration uses MinIO or LocalStack. Acceptance
 includes ranged/retried downloads, checksum mismatch, cancellation, overwrite
 policy, and work-directory escape rejection.
 
-#### Terraform infrastructure
+#### Native-CLI hosting infrastructure
+
+Use the explicitly selected provider's CLI, not Terraform. Cloudflare compute
+is selectable through `cf` but needs a Containers/Sandbox workflow rather than
+the reference plan's SSH-based host recovery. Setup currently records the provider identifier and executable,
+adds its PATH requirement, and prompts for provider-supported region, size,
+and immutable image. Unknown/unsupported execution adapters must fail closed;
+selection does not imply provisioning support.
+
+Implement adapters with fixed argument planning, structured JSON output, pinned
+CLI compatibility, scoped credentials, cancellation, bounded/redacted output,
+and run-owned resources. The provider must return an SSH connection and host-key
+fingerprint through an authenticated control plane. Destruction may affect only
+resources created by that run. Use fake executables for unit tests, then a
+dedicated disposable hosting project for system tests.
+
+Advertised actions: `provision`, `verify`, `destroy`. These remain unimplemented.
+
+#### Terraform infrastructure (optional for unrelated plans)
 
 Wrap a pinned Terraform CLI through `ProcessStartInfo.ArgumentList` with cancellation; never scrape human
 output. Use `terraform show/output -json`, a constrained module directory, an
@@ -304,7 +401,7 @@ after runner failure.
 Advertised actions: `provision`, `verify`, `destroy`.
 
 Unit tests use a scripted fake executable. Integration uses a local-only test
-module. The first AWS system slice provisions the Tier 3 destination, runs the
+module. The first hosting-provider system slice provisions the Tier 3 destination, runs the
 probe, injects a later failure, and proves destroy removes every resource.
 
 #### Proxmox Backup Server
@@ -369,20 +466,70 @@ verifyRoutes
 
 Pure tests use synthetic backup metadata and golden service/network maps.
 Transport tests use the Docker destination with a fake systemd/Coolify command
-adapter. The EC2 system test uses real systemd, Docker, Coolify, PostgreSQL, and
+adapter. The disposable-host system test uses real systemd, Docker, Coolify, PostgreSQL, and
 a tiny synthetic application. Every mutating action must have an idempotency and
 compensation test before it enters the full plan.
 
-#### Cloudflare DNS
+#### GitHub Compose definitions and database volumes
+
+The GitHub provider fetches Compose files through `gh` at exact commits, never
+floating branches or tags. Validate checkout paths and include/extends paths;
+do not run arbitrary repository hooks during retrieval. Its planned action is
+`fetchCompose`, returning definitions for every declared workload.
+
+A separate Compose application provider verifies remote Docker, daemon access,
+Compose v2, and `cloudflared`. Do not require local Docker for remote execution.
+Restore databases before applications, using run-owned isolated volumes. The
+inventory declares `volume-archive` versus `database-native`, exact S3-compatible
+objects and checksums, target volume mappings, database engine/image digests,
+consistency provenance, and read-only verification adapters. Refuse unknown
+formats, incompatible engine images, live-volume overwrites, unsafe extraction,
+and implicit native-restore commands. Providers must validate Compose image
+pins, secrets, dependent services, and volume ownership before mutation.
+Archive extraction requires stopped volumes; native imports may start an
+isolated database on a new run-owned volume before loading the dump. Neither
+mode may overwrite a pre-existing workload's data.
+
+Planned actions: `verifyRuntime`, `restoreDatabases`,
+`removeRecoveredDatabases`, `verifyDatabases`, `deployApplications`,
+`removeApplications`, `verifyRoutes`, `startConnector`, `stopConnector`.
+Coolify bootstrap restores the control-plane backup and encryption key but
+must suppress automatic workload and existing-tunnel startup. Install only
+version/checksum-pinned remote prerequisites before `verifyRuntime`.
+
+Tests use synthetic GitHub responses, stopped-volume archives, native dumps,
+and a disposable Docker destination. Cover multiple database engines,
+UID/GID/permissions, version mismatch, malicious archive paths, checksum
+failure, incomplete backups, application-consistent provenance, database
+verification failures blocking application deployment, and owned-resource-only
+compensation.
+
+#### Cloudflare Tunnel and DNS
 
 Inject an HTTP client and API base URL. Resolve zones exactly, list managed
 record types, perform idempotent batch upserts, snapshot prior records, and
 verify through both the Cloudflare API and authoritative DNS. Never infer a zone
 from an unvalidated public suffix.
 
-Advertised actions: `syncRecords`, `verifyRecords`.
+Use `cf` as the local Cloudflare CLI prerequisite; the remote connector is
+`cloudflared`, not Wrangler or `cf`. Create a replacement tunnel only after
+database/application verification. Configure explicit hostname/service ingress
+and a terminal deny rule, then start a connector using an action-scoped secret
+lease, never token process arguments or journal payloads. The example selects
+HTTP/2 over outbound TCP 7844; transport selection and egress probes must agree.
+Verify the connector before changing public hostname routes.
 
-Unit tests use `httptest.Server`. The live system test uses only a delegated
+Planned tunnel actions: `createTunnel`, `deleteTunnel`, `configureTunnel`,
+`verifyTunnel`, `snapshotRoutes`, `syncTunnelRoutes`, `restoreRoutes`,
+`verifyTunnelRoutes`. Non-tunnel plans may still use `syncRecords` and
+`verifyRecords`. Snapshot exact old DNS records including absence, verify they
+have not changed before cutover, and route to the replacement tunnel's CNAME,
+not the recovered host's public IP. Rollback restores exact prior records only
+if this run still owns the change, then stops the connector and deletes only
+the new tunnel. Keep the previous tunnel intact. Providers must compensate
+partial mutations before returning a failed action.
+
+Unit tests use an injected fake HTTP handler. The live system test uses only a delegated
 ephemeral subdomain in a dedicated test zone and always restores or deletes its
 records. Test partial batch failure, rate limiting, proxy state, TTL, rollback,
 and eventual DNS convergence with a bounded deadline.
@@ -411,18 +558,21 @@ Tests and gate:
 
 ### Phase 7: complete recovery rehearsal
 
-Create synthetic fixtures: a small PostgreSQL schema with a known migration, a
-Coolify metadata backup defining one static application, two test hostnames, and
-versioned S3 objects with checksums. Store credentials in a sandbox Secrets
-Manager path and use a delegated Cloudflare test subdomain.
+Create synthetic fixtures: GitHub Compose definitions pinned to commits, a
+database volume archive and a database-native dump with known migrations, a
+Coolify configuration backup, two test hostnames, and immutable R2/S3-compatible
+objects with checksums. Store credentials in sandbox Cloudflare Secrets Store
+and use a delegated Cloudflare test subdomain.
 
 Run the plan in three checkpoints:
 
-1. `--to verify_target`: provision EC2, pin and test SSH, then roll it back.
-2. `--to verify_applications`: restore Coolify and PostgreSQL, verify schema and
+1. `--to verify_target`: provision the selected host, pin and test SSH, then roll it back.
+2. `--to verify_applications`: restore Coolify and Compose databases, verify schema and
    local routes, then roll everything back without touching DNS.
-3. Full run: update test DNS, verify proxied health, inject a post-DNS failure,
-   prove reverse-order compensation restores DNS and destroys the host, then run
+3. Full run: create a replacement test tunnel, verify its connector, update
+   test hostname routes, verify public health, inject a post-DNS failure,
+   prove compensation restores exact DNS records and removes the replacement
+   connector/tunnel and host without deleting the old tunnel, then run
    once without injection and clean up explicitly.
 
 The rehearsal passes only when the journal contains no secret material, every
@@ -435,15 +585,16 @@ Pull requests run formatting, vet, unit tests, race tests on Linux, schema tests
 Buf lint/breaking checks, secret scanning, and Docker integration. Windows runs
 unit tests and the in-process plugin/SSH suites to protect cross-platform support.
 
-Nightly or manually approved workflows use GitHub OIDC for short-lived AWS and
-Cloudflare credentials. They enforce concurrency limits, cost ceilings, a hard
+Nightly or manually approved workflows use narrowly scoped Cloudflare and
+selected-hosting-provider credentials, with short-lived federation where the
+provider supports it. They enforce concurrency limits, cost ceilings, a hard
 timeout, unconditional cleanup, and an independent expiry janitor. Provider OCI
 artifacts publish only after unit, conformance, integration, vulnerability, and
 provenance checks pass.
 
 ## Definition of done
 
-- All 24 action uses in the reference plan resolve to a built-in or signed,
+- Every action use in the reference plan resolves to a built-in or signed,
   digest-pinned provider action with validated input/output schemas.
 - The default test suite requires no external service and tests every engine
   state transition and provider action.
@@ -460,8 +611,9 @@ provenance checks pass.
 ## Recommended implementation order
 
 Start with Phases 0 through 4 in order. After the conformance kit and destination
-probe are stable, AWS Secrets Manager and S3 can proceed in parallel; Terraform
-must complete before the EC2 destination test; Coolify follows the real SSH
+probe are stable, Cloudflare Secrets Store and R2/S3 can proceed in parallel;
+the selected infrastructure provider must complete before the disposable-host
+destination test; Coolify follows the real SSH
 probe; Cloudflare can proceed independently against its fake API. Package and
 digest publishing starts once one provider passes conformance, then becomes the
 release path for all remaining providers.

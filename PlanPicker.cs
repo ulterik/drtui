@@ -5,14 +5,14 @@ namespace Drtui;
 
 internal static class PlanPicker
 {
-    public static PlanPreview? Select(IReadOnlyList<PlanPreview> previews, DrEnvironment? environment = null)
+    public static PlanPreview? Select(IReadOnlyList<PlanPreview> previews, DrEnvironment? environment = null, bool startWithSetup = false)
     {
         environment ??= DrEnvironment.FromValue(null);
         var selected = 0;
         while (true)
         {
             AnsiConsole.Clear();
-            var command = AnsiConsole.Live(Render(previews, selected, AnsiConsole.Console.Profile.Width, environment))
+            var command = AnsiConsole.Live(Render(previews, selected, AnsiConsole.Console.Profile.Width, environment, startWithSetup))
                 .AutoClear(true)
                 .Start(context =>
                 {
@@ -28,7 +28,7 @@ internal static class PlanPicker
                         if (next != selected)
                         {
                             selected = next;
-                            context.UpdateTarget(Render(previews, selected, AnsiConsole.Console.Profile.Width, environment));
+                            context.UpdateTarget(Render(previews, selected, AnsiConsole.Console.Profile.Width, environment, startWithSetup));
                             context.Refresh();
                         }
                         if (action == ConsoleKey.Enter)
@@ -59,7 +59,8 @@ internal static class PlanPicker
         _ => selected
     };
 
-    internal static IRenderable Render(IReadOnlyList<PlanPreview> previews, int selected, int width, DrEnvironment? environment = null)
+    internal static IRenderable Render(IReadOnlyList<PlanPreview> previews, int selected, int width, DrEnvironment? environment = null,
+        bool startWithSetup = false)
     {
         environment ??= DrEnvironment.FromValue(null);
         var planList = new Table().Border(TableBorder.Rounded).BorderColor(Color.Teal)
@@ -77,10 +78,13 @@ internal static class PlanPicker
 
         var footer = selected < previews.Count && previews[selected].Error is { } error
             ? $"[red]Cannot open: {Markup.Escape(Shorten(error.ReplaceLineEndings(" "), Math.Max(20, width - 15)))}[/]"
-            : "[grey]Enter configure  |  C command  |  Up/Down browse  |  Esc exit[/]";
+            : startWithSetup
+                ? "[grey]Enter start setup  |  C command  |  Up/Down browse  |  Esc exit[/]"
+                : "[grey]Enter configure  |  C command  |  Up/Down browse  |  Esc exit[/]";
         var lines = new List<IRenderable>
         {
-            new Markup($"[bold aqua]DRTUI[/] [grey]/[/] {environment.PromptMarkup} Select a plan [grey]({previews.Count})[/]"),
+            new Markup($"[bold aqua]DRTUI[/] [grey]/[/] {environment.PromptMarkup} " +
+                $"{(startWithSetup ? "Choose a plan to set up" : "Select a plan")} [grey]({previews.Count})[/]"),
             planList
         };
         if (selected < previews.Count && previews[selected].Plan is { } plan)

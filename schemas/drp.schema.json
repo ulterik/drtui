@@ -88,6 +88,11 @@
         "type": { "$ref": "#/$defs/valueType" },
         "description": { "type": "string", "maxLength": 500 },
         "required": { "type": "boolean", "default": false },
+        "pattern": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Optional regular expression for local string validation; evaluated with a bounded timeout."
+        },
         "default": true
       }
     },
@@ -110,6 +115,15 @@
         "digest": {
           "type": "string",
           "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "requiredClis": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "description": "Local executable names checked on PATH, never executed or installed automatically. When present, replaces source-name inference for this provider. Remote prerequisites belong to target verification."
         },
         "config": {
           "type": "object",

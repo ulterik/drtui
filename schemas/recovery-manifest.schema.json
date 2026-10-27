@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://drtui.io/schemas/recovery-manifest/v1alpha1.json",
+  "title": "Compose recovery inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "workloads", "routes"],
+  "properties": {
+    "apiVersion": { "const": "drtui.io/recovery-inventory/v1alpha1" },
+    "workloads": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/workload" }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hostname", "service", "healthPath", "expectedStatus"],
+        "properties": {
+          "hostname": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$" },
+          "service": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+          "healthPath": { "type": "string", "pattern": "^/[^\\r\\n]*$" },
+          "expectedStatus": { "type": "integer", "minimum": 200, "maximum": 399 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_./-]+$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256"],
+      "properties": {
+        "uri": { "type": "string", "pattern": "^s3://[^/\\s]+/[^\\s]+$" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "source"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "kind": { "enum": ["application", "database"] },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "commit", "composeFiles", "service"],
+          "properties": {
+            "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+            "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "composeFiles": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/relativePath" }
+            },
+            "service": { "type": "string", "minLength": 1 }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["engine", "image", "backups", "verification"],
+          "properties": {
+            "engine": { "type": "string", "minLength": 1 },
+            "image": { "type": "string", "pattern": "^\\S+@sha256:[a-f0-9]{64}$" },
+            "backups": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["format", "artifact"],
+                "properties": {
+                  "format": { "enum": ["volume-archive", "database-native"] },
+                  "artifact": { "$ref": "#/$defs/artifact" },
+                  "volume": { "type": "string", "minLength": 1 },
+                  "consistency": { "enum": ["stopped", "application-consistent"] },
+                  "restoreAdapter": { "type": "string", "minLength": 1 }
+                },
+                "allOf": [
+                  {
+                    "if": { "properties": { "format": { "const": "volume-archive" } } },
+                    "then": { "required": ["volume", "consistency"] },
+                    "else": { "required": ["restoreAdapter"] }
+                  }
+                ]
+              }
+            },
+            "verification": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["adapter", "check"],
+              "properties": {
+                "adapter": { "type": "string", "minLength": 1 },
+                "check": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "database" } } },
+          "then": { "required": ["database"] },
+          "else": { "not": { "required": ["database"] } }
+        }
+      ]
+    }
+  }
+}

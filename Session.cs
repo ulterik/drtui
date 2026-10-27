@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace Drtui;
 
@@ -44,7 +45,7 @@ internal sealed class Session(Plan plan)
             var definition = input.Value!;
             Inputs.TryGetValue(input.Key, out var value);
             var issue = ValidateInput((string)definition["type"]!,
-                (bool?)definition["required"] ?? false, value);
+                (bool?)definition["required"] ?? false, value, (string?)definition["pattern"]);
             checks.Add(new Check("input " + input.Key, issue));
         }
         foreach (var (name, vault) in Vaults.OrderBy(item => item.Key, StringComparer.Ordinal))
@@ -74,11 +75,28 @@ internal sealed class Session(Plan plan)
                 checks.Add(new Check("Environment " + vault.TokenEnv,
                     string.IsNullOrWhiteSpace(readEnvironment(vault.TokenEnv)) ? "not set or empty" : null));
         }
+        foreach (var provider in HostingSetup.Providers(Plan))
+        {
+            var config = provider.Value!["config"]!;
+            var issue = HostingSetup.Validate((string?)config["provider"], (string?)config["clientPath"]);
+            if (issue is null && !(provider.Value["requiredClis"] as JsonArray ?? [])
+                .Any(cli => (string?)cli == (string?)config["clientPath"]))
+                issue = "hosting CLI must be declared in requiredClis";
+            checks.Add(new Check("hosting " + provider.Key, issue));
+            if (issue is null && HostingSetup.CompatibilityIssue(Plan, provider.Value!) is { } compatibility)
+                checks.Add(new Check("target compatibility " + provider.Key, compatibility));
+        }
         var tools = new SortedSet<string>(StringComparer.Ordinal);
         if (Vaults.Values.Any(vault => vault.AuthMethod == "aws-cli-profile")) tools.Add(CliToolCatalog.Aws.Executable);
         if (Vaults.Values.Any(vault => vault.AuthMethod == "cloudflare-api-token")) tools.Add(CliToolCatalog.Cloudflare.Executable);
         foreach (var provider in Plan.Providers)
         {
+            if (provider.Value?["requiredClis"] is JsonArray requiredClis)
+            {
+                foreach (var executable in requiredClis)
+                    tools.Add(executable!.GetValue<string>());
+                continue;
+            }
             var kind = (string?)provider.Value?["kind"];
             var source = (string?)provider.Value?["source"] ?? "";
             if (kind == "infrastructure" && source.Contains("terraform", StringComparison.Ordinal))
@@ -151,13 +169,23 @@ internal sealed class Session(Plan plan)
         return checks;
     }
 
-    internal static string? ValidateInput(string type, bool required, string? value)
+    internal static string? ValidateInput(string type, bool required, string? value, string? pattern = null)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Trim() == "null")
             return required ? "required input is missing" : null;
         JsonElement decoded;
         try { decoded = JsonDocument.Parse(value).RootElement.Clone(); }
         catch (JsonException) { return "enter a JSON value"; }
+        if (pattern is not null && decoded.ValueKind == JsonValueKind.String)
+        {
+            try
+            {
+                if (!Regex.IsMatch(decoded.GetString()!, pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)))
+                    return "value does not match the plan's required format";
+            }
+            catch (ArgumentException) { return "plan declares an invalid input pattern"; }
+            catch (RegexMatchTimeoutException) { return "plan input pattern exceeded its validation time limit"; }
+        }
         return type switch
         {
             "string" or "path" or "ip" when decoded.ValueKind != JsonValueKind.String || decoded.GetString() == ""

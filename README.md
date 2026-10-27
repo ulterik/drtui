@@ -9,7 +9,7 @@ local readiness checks. It does **not** execute recovery steps yet.
 Install the .NET 10 SDK, then from the repository root run:
 
 ```sh
-dotnet run --project Drtui.csproj
+dotnet run
 ```
 
 The default plan directory is `examples`. Pass a plan file or a directory of
@@ -21,7 +21,10 @@ dotnet run --project Drtui.csproj -- examples
 ```
 
 Browse plans with Up/Down (or `j`/`k`). The highlighted plan shows a short
-description; press Enter to open its configuration. Invalid plans show a
+description; press Enter to start interactive setup. Plain `dotnet run` takes
+you straight into guided setup after this plan choice, including the option to
+resume a saved draft. No setup command, special key, or setup opt-in is needed.
+Invalid plans show a
 validation error and cannot be opened. Select **Exit**, press `q`, or press Esc
 to leave the browser.
 
@@ -75,29 +78,182 @@ there.
 
 The Proxmox PBS example uses Cloudflare Secrets Store for its keyvault.
 Configure your 32-character Cloudflare account ID in the plan's configuration
-screen, install `wrangler` (the Cloudflare CLI) and `proxmox-backup-client` on
+screen, install `cf` (the Cloudflare CLI) and `proxmox-backup-client` on
 your PATH, and set `CLOUDFLARE_API_TOKEN` in your shell before starting the CLI.
 The token must be authorized to access the account's `PBS_API_TOKEN` secret;
 local readiness checks only test whether the tools are on PATH and the
 environment variable is present; they do not verify Cloudflare login or access.
-The Coolify example continues to use an AWS CLI profile and region.
+The Compose/Coolify example also uses Cloudflare Secrets Store. Configure its
+keyvault account ID and bootstrap `CLOUDFLARE_API_TOKEN`; the planned provider
+leases `COOLIFY_APP_KEY`, the recovery `CLOUDFLARE_API_TOKEN`,
+`R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. The R2 S3 client uses those
+leased Cloudflare credentials, not an AWS CLI profile. Neither example requires
+an AWS account, AWS CLI, or AWS Secrets Manager. The keyvault account and the
+input account owning the replacement tunnel may be different.
 
 Highlight an input or keyvault setting and press Enter to edit it. Enter strings
 (including IPs and paths) as plain text, for example `203.0.113.8`; enter
 numbers, booleans, arrays, and objects as JSON. Clearing a required value marks
-it as missing. Edits stay in memory; they do not change the plan file. Local
+it as missing. Ordinary edits stay in memory until saved through guided setup;
+they never overwrite the source plan. Local
 checks run on selection and after edits. Press `r` to recheck after changing
 local setup, or Esc to return to plans. AWS profile results are reused after
 ordinary input edits; changing the profile or pressing `r` runs a fresh AWS
 profile check. Ctrl+C exits.
 
+## Guided setup and secure plan storage
+
+Plain `dotnet run` starts the interactive setup flow: choose a plan and follow
+the prompts. When a plan is opened through an explicit path, missing local
+requirements also start setup automatically. Install/login/publication actions
+still require confirmation, but entering setup itself does not.
+
+Press **`s`** on the configuration screen to revisit setup later. The explicit
+`setup` command remains an optional shortcut, not a prerequisite:
+
+```powershell
+dotnet run --project Drtui.csproj -- setup .\examples\coolify-s3-cloudflare\plan.drp.yaml
+```
+
+The wizard prioritizes missing hosting selection, required tools, invalid or
+missing configuration, and the bootstrap token. It explains each requirement,
+offers configure/skip/back choices, and validates entries before accepting
+them. The primary plan checks Cloudflare ID lengths, HTTPS R2 endpoint shape,
+exact S3 object URI shape, and SHA-256 syntax. These checks do not prove that
+the account, backup, or checksum is correct remotely.
+
+The primary plan **does not use Terraform or AWS**. The hosting chooser includes
+Cloudflare Containers/Sandbox (`cf`), Hetzner (`hcloud`), DigitalOcean (`doctl`),
+and other Linux/VPS providers. Cloudflare's Containers/Sandbox provides Linux
+microVM compute managed through Workers/Durable Objects; it is not the SSH host
+interface used by this reference plan. Selecting Cloudflare is valid and saved,
+but setup reports a separate workflow-compatibility block and stops asking
+irrelevant Linux-host questions. A Cloudflare-compatible recovery workflow and
+execution adapter are not implemented. See
+[Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/).
+For Linux/VPS targets, select a provider-supported region near users/data,
+a size sufficient for all services and recovery disk, and an exact image ID.
+No provider, region, machine size, or image is silently guessed.
+
+The wizard installer shows **only required tools**, including Node.js when
+needed for `cf`. Windows catalogued installs require confirmation; other tools
+get vendor-install guidance. Authentication offers confirmed interactive
+`gh auth login --web --git-protocol https`, `cf auth login`,
+`hcloud context create drtui-recovery`, or `doctl auth init` as applicable.
+Login credentials are managed by those vendors' CLIs, outside the plan. No
+server, backup object, DNS record, or tunnel is changed by setup.
+
+For the bootstrap `CLOUDFLARE_API_TOKEN`, setup accepts masked input for the
+current process only. It never writes the token to disk or GitHub. `cf` browser
+login does not satisfy this separate bootstrap requirement. R2 credentials
+should be read-only for backup objects; DNS/tunnel and Secrets Store permissions
+should be limited to the required account, zone, and secret names. The wizard
+provides guidance, not remote permission or secret-existence verification.
+
+Successful setup actions save a non-secret draft under the current user's
+local application-data directory:
+`drtui/plans/<plan-id>/plan.drp.yaml`. Directories are restricted to the current
+Windows user or Unix mode `0700`; Unix draft files use `0600`. The wizard
+offers to resume that draft next time. Local drafts are editable preparation
+state, separate from the future stateless execution engine.
+
+Choose **Save draft and publish to private GitHub** for the portable copy.
+Setup uses `gh` to detect the current repository and list accessible private
+repositories, including organization and collaborator repositories. Choose from
+the writable private repositories without typing `owner/repo`; a saved selection
+is prioritized, followed by the current repository when eligible. Missing `gh`
+opens installation guidance, and missing authentication offers browser login.
+Public or read-only repositories are excluded; discovery failures are reported
+instead of being treated as an empty list. **Create a new private repository**
+is available even when no existing repositories are found. Setup discovers your
+account and organization memberships through `gh`, lets you choose the owner and
+a repository name, and requires confirmation before creation. Organization policy,
+SSO authorization, and token permissions can restrict creation; failures are reported
+without switching owners or visibility. No local code is pushed.
+Setup verifies the new repository's name, privacy, and write access, then
+rechecks repository privacy
+and requires explicit confirmation before creating/updating
+`plans/<plan-id>/plan.drp.yaml`. Known literal credential fields and secret
+defaults are rejected; only public configuration and secret references belong
+in the plan. Never enter credentials into ordinary input fields.
+Updates use the previous blob SHA to reject concurrent edits. Publication
+requires write authorization and its own confirmation, separate from repository
+creation. Setup never silently falls back to public storage.
+
+To access the plan from another authorized machine, clone the private
+repository with `gh repo clone <owner/repo>`, then run `setup` with the saved
+plan path. Keep GitHub and Cloudflare recovery access independent of the host
+being recovered. GitHub history retains uploaded versions, so review public
+configuration for sensitive infrastructure metadata before publishing.
+**Live recovery and hosting-provider execution remain unimplemented.**
+
+## Generic Compose recovery plan
+
+The [primary example](examples/coolify-s3-cloudflare/plan.drp.yaml) now describes:
+
+1. Provision and probe a host through its selected provider's native CLI.
+2. Read checksum-pinned Coolify state and a recovery inventory from Cloudflare R2.
+3. Fetch application and database Compose definitions from GitHub at exact commits.
+4. Restore Coolify configuration without starting workloads or public ingress.
+5. Verify remote Docker, Compose v2, and `cloudflared`; restore databases into
+   isolated volumes, verify them, then deploy and verify applications.
+6. Create a replacement Cloudflare Tunnel, configure ingress, start its connector,
+   and verify connectivity before changing hostname routes.
+7. Snapshot exact old DNS records, point hostnames at the new tunnel, and verify
+   public health. Compensation restores those records, stops the new connector,
+   and deletes only the new tunnel; the old tunnel is retained.
+
+This is a **planned provider contract**, not an executable recovery feature.
+The example's required account, backup, endpoint, and checksum inputs are
+deliberately unset. Its hosting selection and provider digests remain
+placeholders. No backup is downloaded, Compose file executed, or tunnel created
+by the current application.
+
+The [inventory schema](schemas/recovery-manifest.schema.json) defines a list
+of workloads rather than a fixed application or database. Each workload names
+its GitHub `owner/repo`, exact 40-character `commit`, relative `composeFiles`,
+and Compose `service`. Database entries additionally declare the pinned engine
+image, read-only verification adapter/check, and checksummed backup objects.
+Each backup must explicitly select `volume-archive` (with a target Compose volume
+and stopped/application-consistent provenance) or `database-native` (with a
+restore adapter). No backup format is inferred from its bucket or filename.
+The future manifest action must also reject duplicate workload IDs, unsafe archive
+entries, undefined Compose services/volumes, invalid routes, and incompatible
+engine versions; the current loader validates the plan, not remote inventories.
+
+Cloudflare R2's cold-storage option is **Infrequent Access**, not AWS Glacier.
+It is accessible through the S3 API without a Glacier-style thaw step; retrieval
+fees can apply. Set the account-specific HTTPS `r2_endpoint`, exact backup object
+URIs, and trusted SHA-256 values before preparing a run. See
+[R2 storage classes](https://developers.cloudflare.com/r2/buckets/storage-classes/).
+
+Providers may declare `requiredClis: [gh, cf]` independently of their registry
+name or capability. These are local PATH checks, not commands or install scripts.
+An explicit empty list means no provider-specific local CLI is needed; omitted
+lists preserve legacy inference. Keyvault authentication still requires its CLI.
+Uncatalogued hosting CLIs (for example `hcloud`) appear as required and get manual
+vendor-install guidance, never an arbitrary installer command. Docker/Compose
+and `cloudflared` in this example are **remote** prerequisites, checked by the
+planned runtime action rather than incorrectly requiring local Docker.
+
+## CLI installation
+
 Press `i` on the configuration screen to see the approved CLI list: Cloudflare
-(`wrangler`), AWS (`aws`), Terraform (`terraform`), GitHub (`gh`), and Proxmox
-(`proxmox-backup-client`). The table shows which tools the selected plan needs
-and which are optional; missing optional tools do not block readiness. On
-Windows, the menu offers confirmed Winget installs for AWS CLI, Terraform, and
-GitHub CLI. Wrangler installs through npm (with a Winget Node.js LTS option if
-npm is missing); it has no verified Winget package. The PBS client also has no
+(`cf`), AWS (`aws`), Terraform (`terraform`), GitHub (`gh`), Proxmox
+(`proxmox-backup-client`), Coolify (`coolify`), and the Tunnel connector
+(`cloudflared`). The table shows which tools the selected plan needs
+and which are optional; missing optional tools do not block readiness.
+AWS and Terraform remain optional catalog entries for unrelated plans, not
+primary-plan dependencies. Guided setup hides those unrelated tools.
+On Windows, the catalog menu offers confirmed Winget installs for AWS CLI, Terraform, and
+GitHub CLI. Cloudflare `cf` installs with `npm install --global cf` (with a
+Winget Node.js LTS option if npm is missing); it has no verified Winget package
+in this application's catalog. `cf` is currently beta; see the
+[official CLI documentation](https://developers.cloudflare.com/cf/).
+Wrangler is no longer this application's Cloudflare prerequisite or installer.
+`cf` manages API resources; `cloudflared` remains the separate remote Tunnel
+connector. Coolify and `cloudflared` have vendor-install guidance only.
+The PBS client also has no
 verified Winget package. On Windows, its menu entry gives a guided Debian WSL
 setup: configure Proxmox's signed client-only APT repository for the Debian
 release, then install `proxmox-backup-client` inside WSL. Nothing runs
